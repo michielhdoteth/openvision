@@ -4,6 +4,7 @@ import numpy as np
 import subprocess
 import tempfile
 import os
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -16,8 +17,23 @@ def probe(path: str) -> dict:
     vfr_mode (cfr/vfr/unknown), color_range, audio_stream
     """
     cap = cv2.VideoCapture(path)
-    if not cap.isOpened():
-        raise FileNotFoundError(f"Cannot open video file: {path}")
+    opened = cap.isOpened()
+    if not opened:
+        enhanced = _probe_ffprobe(path)
+        if enhanced.get("duration_seconds", 0) > 0 and (enhanced.get("has_audio") or enhanced.get("has_video")):
+            return {
+                "duration_seconds": enhanced["duration_seconds"],
+                "width": enhanced.get("width", 0), "height": enhanced.get("height", 0),
+                "fps": enhanced.get("fps", 0.0), "codec": enhanced.get("codec", "unknown"),
+                "frame_count": enhanced.get("frame_count", 0),
+                "vfr_mode": enhanced.get("vfr_mode", "unknown"),
+                "color_range": enhanced.get("color_range", "unknown"),
+                "has_audio": enhanced.get("has_audio", False),
+                "has_video": enhanced.get("has_video", False),
+                "bit_rate": enhanced.get("bit_rate", 0),
+                "pixel_format": enhanced.get("pixel_format", "unknown"),
+            }
+        raise FileNotFoundError(f"Cannot open media file: {path}")
 
     fps = cap.get(cv2.CAP_PROP_FPS)
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -32,6 +48,7 @@ def probe(path: str) -> dict:
 
     # Enhanced metadata from ffprobe (VFR detection, color range, audio)
     enhanced = _probe_ffprobe(path)
+    duration = duration or enhanced.get("duration_seconds", 0)
 
     return {
         "duration_seconds": duration,
@@ -43,6 +60,7 @@ def probe(path: str) -> dict:
         "vfr_mode": enhanced.get("vfr_mode", "unknown"),
         "color_range": enhanced.get("color_range", "unknown"),
         "has_audio": enhanced.get("has_audio", False),
+        "has_video": enhanced.get("has_video", True),
         "bit_rate": enhanced.get("bit_rate", 0),
         "pixel_format": enhanced.get("pixel_format", "unknown"),
     }
@@ -57,6 +75,13 @@ def _probe_ffprobe(path: str) -> dict:
         "vfr_mode": "unknown",
         "color_range": "unknown",
         "has_audio": False,
+        "has_video": False,
+        "duration_seconds": 0.0,
+        "width": 0,
+        "height": 0,
+        "fps": 0.0,
+        "frame_count": 0,
+        "codec": "unknown",
         "bit_rate": 0,
         "pixel_format": "unknown",
     }
@@ -65,11 +90,7 @@ def _probe_ffprobe(path: str) -> dict:
         # Get pixel format and color info
         cmd = [
             "ffprobe", "-v", "error",
-            "-select_streams", "v:0",
-            "-show_entries", "stream=pix_fmt,color_range,color_space,color_transfer,color_primaries",
-            "-show_entries", "format=bit_rate,duration",
-            "-show_entries", "stream=index",
-            "-select_streams", "a",
+            "-show_entries", "stream=codec_type,codec_name,pix_fmt,color_range,color_space,color_transfer,color_primaries,width,height,avg_frame_rate,nb_frames:format=bit_rate,duration",
             "-of", "json",
             path,
         ]
@@ -77,7 +98,6 @@ def _probe_ffprobe(path: str) -> dict:
         if proc.returncode != 0:
             return result
 
-        import json
         data = json.loads(proc.stdout)
 
         # Check for audio stream
@@ -85,19 +105,31 @@ def _probe_ffprobe(path: str) -> dict:
         for s in streams:
             if s.get("codec_type") == "audio":
                 result["has_audio"] = True
-                break
 
         # Get video stream info
         for s in streams:
-            if s.get("codec_type") == "video" or "pix_fmt" in s:
+            if s.get("codec_type") == "video":
+                result["has_video"] = True
                 result["pixel_format"] = s.get("pix_fmt", "unknown")
                 result["color_range"] = s.get("color_range", "unknown")
-                break
+                result["width"] = int(s.get("width", 0) or 0)
+                result["height"] = int(s.get("height", 0) or 0)
+                result["codec"] = s.get("codec_name", "unknown")
+                try:
+                    numerator, denominator = (s.get("avg_frame_rate", "0/1").split("/", 1) + ["1"])[:2]
+                    result["fps"] = float(numerator) / float(denominator) if float(denominator) else 0.0
+                except (ValueError, ZeroDivisionError):
+                    result["fps"] = 0.0
+                try:
+                    result["frame_count"] = int(s.get("nb_frames", 0) or 0)
+                except (ValueError, TypeError):
+                    result["frame_count"] = 0
 
         fmt = data.get("format", {})
         result["bit_rate"] = int(fmt.get("bit_rate", 0))
+        result["duration_seconds"] = float(fmt.get("duration", 0) or 0)
 
-    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError, KeyError):
+    except (subprocess.TimeoutExpired, FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
         pass
 
     return result

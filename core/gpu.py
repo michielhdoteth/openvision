@@ -70,7 +70,8 @@ def get_gpu_name() -> str:
 
     try:
         handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-        return pynvml.nvmlDeviceGetName(handle).decode("utf-8")
+        name = pynvml.nvmlDeviceGetName(handle)
+        return name.decode("utf-8") if isinstance(name, bytes) else str(name)
     except Exception:
         return "unknown"
 

@@ -12,6 +12,46 @@ from core.video import (
     detect_vfr,
     detect_color_range,
 )
+
+
+def test_ffprobe_detects_audio_and_video_streams(monkeypatch):
+    import subprocess
+    from core.video import _probe_ffprobe
+
+    class Result:
+        returncode = 0
+        stdout = '{"streams":[{"codec_type":"video","pix_fmt":"yuv420p","color_range":"tv"},{"codec_type":"audio"}],"format":{"bit_rate":"12345"}}'
+
+    def run(args, **kwargs):
+        assert "stream=codec_type" in args[args.index("-show_entries") + 1]
+        assert "format=bit_rate" in args[args.index("-show_entries") + 1]
+        return Result()
+    monkeypatch.setattr(subprocess, "run", run)
+    metadata = _probe_ffprobe("sample.mp4")
+    assert metadata["has_audio"] is True
+    assert metadata["pixel_format"] == "yuv420p"
+    assert metadata["bit_rate"] == 12345
+
+
+def test_probe_accepts_audio_only_media_when_opencv_cannot_open(monkeypatch):
+    import core.video as video
+
+    class ClosedCapture:
+        def isOpened(self):
+            return False
+
+    monkeypatch.setattr(video.cv2, "VideoCapture", lambda *_: ClosedCapture())
+    monkeypatch.setattr(video, "_probe_ffprobe", lambda *_: {
+        "duration_seconds": 12.5, "has_audio": True, "has_video": False,
+        "width": 0, "height": 0, "fps": 0, "frame_count": 0,
+        "codec": "aac", "bit_rate": 64000, "pixel_format": "unknown",
+        "vfr_mode": "unknown", "color_range": "unknown",
+    })
+    metadata = video.probe("audio-only.m4a")
+    assert metadata["duration_seconds"] == 12.5
+    assert metadata["has_audio"] is True
+    assert metadata["has_video"] is False
+    assert metadata["frame_count"] == 0
 from core.image import (
     downscale,
     encode_base64,

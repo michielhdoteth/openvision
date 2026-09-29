@@ -9,6 +9,17 @@ from core.gpu import get_device, unload_model, log_vram
 logger = logging.getLogger(__name__)
 
 
+def create_segmenter(config: dict):
+    """Create a text-prompt segmenter matching the configured provider."""
+    default_provider = "sam3" if str(config.get("model", "")).lower() in {"sam3", "sam-3"} else "sam"
+    provider = str(config.get("provider", default_provider)).lower()
+    if provider in {"sam3", "sam-3"} or str(config.get("model", "")).lower() == "sam3":
+        return Sam3Provider(config)
+    if provider == "sam":
+        return SamProvider(config)
+    raise ValueError(f"Unknown segmentation provider '{provider}'. Choose 'sam3' or 'sam'.")
+
+
 class SamProvider:
     """
     SAM segmentation provider.
@@ -61,7 +72,9 @@ class SamProvider:
                 return self._segment_impl(image, prompt)
             except Exception as e2:
                 logger.error(f"Fallback segmentation also failed: {e2}")
-                return []
+                raise RuntimeError(
+                    f"Segmentation failed for configured model '{original_model}' and fallback '{self.fallback}': {e2}"
+                ) from e2
             finally:
                 self.model = original_model
                 if self.config.get("load_on_demand", True):
@@ -85,11 +98,12 @@ class SamProvider:
             dict with: frames_processed, objects (list of object data)
         """
         results = []
+        prompt_slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in prompt).strip("_")[:24] or "object"
 
         for timestamp, image in frames:
             objects = self.segment(image, prompt)
             if objects:
-                for obj in objects:
+                for object_index, obj in enumerate(objects):
                     obj_data = {
                         "timestamp": f"{int(timestamp // 60):02d}:{int(timestamp % 60):02d}",
                         "time_seconds": timestamp,
@@ -98,7 +112,7 @@ class SamProvider:
                     }
 
                     if run_dir and "mask" in obj:
-                        mask_path = run_dir / "masks" / f"mask_{int(timestamp):04d}.png"
+                        mask_path = run_dir / "masks" / f"mask_{prompt_slug}_{int(timestamp):08d}_{object_index:03d}.png"
                         self._save_mask(obj["mask"], str(mask_path))
                         obj_data["mask_path"] = str(mask_path)
 
@@ -311,9 +325,14 @@ class Sam3Provider:
 
         results = []
         for i in range(len(masks)):
-            mask = masks[i].cpu().numpy() if hasattr(masks[i], "cpu") else masks[i]
-            bbox = boxes[i].tolist() if hasattr(boxes[i], "tolist") else boxes[i]
-            score = float(scores[i]) if hasattr(scores[i], "__float__") else float(scores[i])
+            mask = masks[i]
+            if hasattr(mask, "detach"):
+                mask = mask.detach().cpu().numpy()
+            elif hasattr(mask, "cpu"):
+                mask = mask.cpu().numpy()
+            bbox = boxes[i].detach().cpu().tolist() if hasattr(boxes[i], "detach") else boxes[i].tolist() if hasattr(boxes[i], "tolist") else boxes[i]
+            score_value = scores[i]
+            score = float(score_value.detach().cpu().item() if hasattr(score_value, "detach") else score_value)
 
             results.append({
                 "mask": mask,
@@ -322,6 +341,34 @@ class Sam3Provider:
             })
 
         return results
+
+    def segment_frames(self, frames: list[tuple[float, np.ndarray]], prompt: str,
+                       run_dir: Optional[Path] = None) -> dict:
+        """Apply text-prompt segmentation to timestamped frames and persist masks."""
+        prompt_slug = "".join(ch.lower() if ch.isalnum() else "_" for ch in prompt).strip("_")[:24] or "object"
+        objects = []
+        for timestamp, image in frames:
+            for index, item in enumerate(self.segment(image, prompt)):
+                obj = {"timestamp": f"{int(timestamp // 60):02d}:{int(timestamp % 60):02d}",
+                       "time_seconds": timestamp, "bbox": item.get("bbox", []),
+                       "score": item.get("score", 0.0)}
+                if run_dir and item.get("mask") is not None:
+                    mask_path = run_dir / "masks" / f"mask_{prompt_slug}_{int(timestamp):08d}_{index:03d}.png"
+                    self._save_mask(np.asarray(item["mask"]), mask_path)
+                    obj["mask_path"] = str(mask_path)
+                objects.append(obj)
+        return {"frames_processed": len(frames), "objects": objects}
+
+    @staticmethod
+    def _save_mask(mask: np.ndarray, path: Path) -> None:
+        import cv2
+        path.parent.mkdir(parents=True, exist_ok=True)
+        mask = np.asarray(mask).squeeze()
+        if mask.ndim != 2:
+            raise ValueError(f"Expected a 2D segmentation mask, got shape {mask.shape}")
+        image = (mask * 255).astype(np.uint8) if mask.max(initial=0) <= 1 else mask.astype(np.uint8)
+        if not cv2.imwrite(str(path), image):
+            raise RuntimeError(f"Could not save segmentation mask to {path}")
 
     def _ensure_loaded(self):
         """Load SAM 3 model if not already loaded."""
@@ -347,7 +394,8 @@ class Sam3Provider:
             logger.info("SAM 3 loaded successfully")
         except ImportError as e:
             logger.error(f"Failed to load SAM 3: {e}")
-            logger.error("Install with: pip install sam3")
+            logger.error("SAM 3 is not bundled: its upstream NumPy constraint conflicts with OpenVision's NumPy 2 requirement.")
+            logger.error("Install a compatible SAM 3 build in a separate environment and configure its checkpoint/access first.")
             raise
         except Exception as e:
             logger.error(f"Error loading SAM 3 model: {e}")

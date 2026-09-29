@@ -33,6 +33,8 @@ def ground_cmd(
         openvision ground video.mp4 --query "all people" --interval 1.0
         openvision ground frame.jpg --query "laptop on desk"
     """
+    global console
+    console = Console(stderr=json_output)
     from core.video import probe
     from core.sampling import smart_sample
     from providers.locate_anything import LocateAnythingProvider
@@ -88,10 +90,8 @@ def ground_cmd(
         console.print(f"[dim]Grounding '{query}' across {len(frames)} frames...[/dim]")
 
         # Set up cache
-        cache_dir = config.get("cache", {}).get("directory", "runs")
-        if not Path(cache_dir).is_absolute():
-            from storage.paths import runs_dir
-            cache_dir = str(runs_dir(config))
+        from storage.paths import run_cache_dir
+        cache_dir = str(run_cache_dir(config))
         cache = RunCache(cache_dir)
         import re
         safe_query = re.sub(r'[^a-zA-Z0-9_]', '_', query)[:20].strip('_')
@@ -148,7 +148,7 @@ def ground_cmd(
 
         # Display
         if json_output:
-            console.print(json.dumps(result.model_dump(), indent=2))
+            typer.echo(json.dumps(result.model_dump(), indent=2))
         else:
             _display_grounding(result)
 

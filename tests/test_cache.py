@@ -150,6 +150,17 @@ class TestRunCache:
         key2 = create_cache_key(str(test_file), mode="detailed")
         assert key1 != key2
 
+    def test_cache_key_includes_stage_options_and_high_resolution_mtime(self, tmp_path):
+        source = tmp_path / "sample.mp4"
+        source.write_bytes(b"source")
+        cache = RunCache(str(tmp_path / "runs"))
+        visual_only = cache.cache_key(str(source), options={"transcribe": False})
+        with_audio = cache.cache_key(str(source), options={"transcribe": True})
+        assert visual_only != with_audio
+        source.write_bytes(b"changed")
+        changed_source = cache.cache_key(str(source), options={"transcribe": False})
+        assert changed_source != visual_only
+
     def test_get_run_not_found(self, cache):
         assert cache.get_run("nonexistentkey") is None
 

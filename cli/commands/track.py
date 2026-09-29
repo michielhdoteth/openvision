@@ -27,6 +27,8 @@ def track_cmd(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Track an object in a video by prompt."""
+    global console
+    console = Console(stderr=json_output)
     input_path = Path(path)
     if not input_path.exists():
         console.print(f"[red]Error:[/red] File not found: {path}")
@@ -120,16 +122,14 @@ def track_cmd(
     )
 
     # Cache result
-    cache_dir = config.get("cache", {}).get("directory", "runs")
-    if not Path(cache_dir).is_absolute():
-        from storage.paths import runs_dir
-        cache_dir = str(runs_dir(config))
+    from storage.paths import run_cache_dir
+    cache_dir = str(run_cache_dir(config))
     cache = RunCache(cache_dir)
     run_dir = cache.create_run(f"track_{prompt.replace(' ', '_')[:20]}", video_meta)
     cache.save_artifact(run_dir, "tracking.json", result.model_dump())
 
     if json_output:
-        console.print(json.dumps(result.model_dump(), indent=2))
+        typer.echo(json.dumps(result.model_dump(), indent=2))
     else:
         _display_track_result(result)
 

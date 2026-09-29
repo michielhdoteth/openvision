@@ -25,6 +25,8 @@ def probe_cmd(
     Returns duration, resolution, FPS, codec, and estimated processing cost.
     With --deep, also detects VFR mode and color range.
     """
+    global console
+    console = Console(stderr=json_output or jsonl)
     # Validate file exists
     video_path = Path(path)
     if not video_path.exists():
@@ -63,8 +65,8 @@ def probe_cmd(
         writer.flush()
 
     if json_output:
-        console.print(json.dumps(result.model_dump(), indent=2))
-    else:
+        typer.echo(json.dumps(result.model_dump(), indent=2))
+    elif not jsonl:
         _display_probe_table(result, str(video_path), deep)
 
 

@@ -45,6 +45,8 @@ def transcribe_cmd(
     max_speakers: int = typer.Option(None, "--max-speakers", help="Maximum number of speakers"),
 ):
     """Transcribe audio from a video file."""
+    global console
+    console = Console(stderr=json_output or jsonl)
     from core.download import is_url
     from core.stream import create_jsonl_writer
     writer = create_jsonl_writer(jsonl)
@@ -75,6 +77,7 @@ def transcribe_cmd(
 
     # Resolve cookies
     cookies_file = cookies
+    owned_cookie_file = None
     if cookies_from_browser and not cookies_file:
         import tempfile
         try:
@@ -89,6 +92,7 @@ def transcribe_cmd(
                 cookie_tmp.write(f"{domain}\tTRUE\t{c.path}\t{secure}\t{int(c.expires or 0)}\t{c.name}\t{c.value}\n")
             cookie_tmp.close()
             cookies_file = cookie_tmp.name
+            owned_cookie_file = cookie_tmp.name
             _safe_print(f"[dim]Loaded cookies from {cookies_from_browser}[/dim]")
         except ImportError:
             _safe_print("[yellow]browser-cookie3 not installed. Install with: pip install browser-cookie3[/yellow]")
@@ -116,6 +120,17 @@ def transcribe_cmd(
         except Exception as e:
             _safe_print(f"[red]Download failed:[/red] {e}")
             raise typer.Exit(code=1)
+        finally:
+            if owned_cookie_file:
+                try:
+                    os.unlink(owned_cookie_file)
+                except FileNotFoundError:
+                    pass
+    elif owned_cookie_file:
+        try:
+            os.unlink(owned_cookie_file)
+        except FileNotFoundError:
+            pass
 
     # Check for downloaded subtitle files
     if is_remote and dl_result.get("subs_file") and os.path.exists(dl_result["subs_file"]):
@@ -255,8 +270,8 @@ def transcribe_cmd(
             ],
             "full_text": transcript.text,
         }
-        console.print(json.dumps(output, indent=2))
-    else:
+        typer.echo(json.dumps(output, indent=2))
+    elif not jsonl:
         _display_transcript(transcript)
 
     # Optionally save

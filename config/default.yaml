@@ -48,14 +48,9 @@ models:
     max_tokens: 1024
 
   segmentation:
-    provider: "sam"
-    model: "sam-2.1"
-    fallback_model: "mobile-sam"
+    provider: "sam3"
+    model: "sam3"
     load_on_demand: true
-
-  ocr:
-    enabled: false
-    provider: "paddleocr"
 
 gpu_policy:
   unload_after_job: true
@@ -84,18 +79,15 @@ modes:
     fps: 0.25
     max_frames: 30
     segmentation: false
-    ocr: false
 
   balanced:
     resolution: 768
     fps: 0.5
     max_frames: 60
     segmentation: "on_demand"
-    ocr: false
 
   detailed:
     resolution: 1024
     fps: 1.0
     max_frames: 180
     segmentation: true
-    ocr: true

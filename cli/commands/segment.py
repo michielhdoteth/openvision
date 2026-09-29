@@ -10,7 +10,7 @@ from rich.panel import Panel
 from core.video import probe, extract_frames, extract_frames_by_indices
 from core.sampling import smart_sample
 from core.gpu import auto_downgrade_mode, log_vram
-from providers.sam import SamProvider
+from providers.sam import create_segmenter
 from storage.cache import RunCache
 from storage.config import load_config, get_mode_config
 from models import SegmentResult, SegmentObject
@@ -29,6 +29,8 @@ def segment_cmd(
     jsonl: bool = typer.Option(False, "--jsonl", help="Streaming JSONL output"),
 ):
     """Segment objects in a video by prompt."""
+    global console
+    console = Console(stderr=json_output or jsonl)
     input_path = Path(path)
     if not input_path.exists():
         console.print(f"[red]Error:[/red] File not found: {path}")
@@ -74,17 +76,19 @@ def segment_cmd(
     console.print(f"[dim]Analyzing {len(frames)} frames for '{prompt}'...[/dim]")
 
     # Create run directory
-    cache_dir = config.get("cache", {}).get("directory", "runs")
-    if not Path(cache_dir).is_absolute():
-        from storage.paths import runs_dir
-        cache_dir = str(runs_dir(config))
+    from storage.paths import run_cache_dir
+    cache_dir = str(run_cache_dir(config))
     cache = RunCache(cache_dir)
     run_dir = cache.create_run("seg_" + prompt.replace(" ", "_")[:20], video_meta)
 
     # Load SAM
     log_vram("before_segmentation")
     sam_config = config.get("models", {}).get("segmentation", {})
-    provider = SamProvider(sam_config)
+    try:
+        provider = create_segmenter(sam_config)
+    except (ImportError, ValueError) as e:
+        console.print(f"[red]Segmentation unavailable:[/red] {e}")
+        raise typer.Exit(code=1)
 
     try:
         result = provider.segment_frames(
@@ -128,14 +132,13 @@ def segment_cmd(
     if writer:
         writer.emit_probe({"type": "segmentation", "objects_found": len(objects)})
         for obj in objects:
-            writer.emit_frame(obj.get("track_id", 0), obj.get("start_time", 0),
-                              detections=[obj])
-        writer.emit_done({"objects": len(objects), "frames": len(output.frames)})
+            writer.emit("object", obj.model_dump())
+        writer.emit_done({"objects": len(objects), "frames": output.frames_processed})
         writer.flush()
 
     if json_output:
-        console.print(json.dumps(output.model_dump(), indent=2))
-    else:
+        typer.echo(json.dumps(output.model_dump(), indent=2))
+    elif not jsonl:
         _display_segment_result(output)
 
 

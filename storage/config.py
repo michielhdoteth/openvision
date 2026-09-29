@@ -9,26 +9,24 @@ def find_config() -> Path:
     """
     Find the config file to use.
 
-    Priority:
-    1. OPENVISION_CONFIG env var (or legacy OPHANIM_CONFIG for backward compat)
-    2. config/default.yaml relative to package
-    3. config/default.yaml relative to cwd
+    Explicit environment configuration wins; otherwise use the per-user file,
+    then the packaged defaults.
     """
     env_config = os.environ.get("OPENVISION_CONFIG") or os.environ.get("OPHANIM_CONFIG")
     if env_config:
-        env_path = Path(env_config)
-        if env_path.exists():
-            return env_path
+        env_path = Path(env_config).expanduser()
+        if not env_path.is_file():
+            raise FileNotFoundError(f"Config file from OPENVISION_CONFIG does not exist: {env_path}")
+        return env_path
+
+    user_config = Path.home() / ".openvision" / "config.yaml"
+    if user_config.is_file():
+        return user_config
 
     # Package-relative
     pkg_config = Path(__file__).parent.parent / "config" / "default.yaml"
     if pkg_config.exists():
         return pkg_config
-
-    # CWD-relative
-    cwd_config = Path.cwd() / "config" / "default.yaml"
-    if cwd_config.exists():
-        return cwd_config
 
     raise FileNotFoundError(
         "Cannot find config file. Set OPENVISION_CONFIG env var "
@@ -47,19 +45,27 @@ def load_config(config_path: Optional[str] = None) -> dict:
         Dict with merged configuration values.
     """
     if config_path:
-        path = Path(config_path)
+        path = Path(config_path).expanduser()
     else:
         path = find_config()
 
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
 
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
     if config is None:
         config = {}
 
+    # Auto-discovered user config is a partial override over immutable package
+    # defaults. An explicitly requested file remains an exact, isolated input.
+    default_path = Path(__file__).parent.parent / "config" / "default.yaml"
+    user_path = Path.home() / ".openvision" / "config.yaml"
+    if not config_path and path.resolve() != default_path.resolve() and default_path.is_file():
+        with open(default_path, encoding="utf-8") as f:
+            defaults = yaml.safe_load(f) or {}
+        return merge_config(defaults, config)
     return config
 
 

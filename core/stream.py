@@ -17,6 +17,8 @@ class JsonlWriter:
         {"event": "probe", "data": {...}, "ts": "..."}
         {"event": "frame", "data": {...}, "ts": "..."}
         {"event": "transcript", "data": {...}, "ts": "..."}
+        {"event": "stage", "data": {"name": ..., "status": ...}, "ts": "..."}
+        {"event": "result", "data": {...complete result...}, "ts": "..."}
         {"event": "summary", "data": {...}, "ts": "..."}
         {"event": "error", "data": {...}, "ts": "..."}
         {"event": "done", "data": {...}, "ts": "..."}

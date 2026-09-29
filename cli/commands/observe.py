@@ -46,6 +46,168 @@ def _fmt_tokens(tokens: TokenUsage) -> str:
     return f"{tokens.total_tokens} total | " + " + ".join(parts)
 
 
+def _transcript_from_captions(captions_file: str) -> Optional[Transcript]:
+    """Load downloaded SRT/VTT captions into the shared transcript model."""
+    caption_path = Path(captions_file)
+    if not caption_path.is_file():
+        return None
+    from core.captions import parse_srt, parse_vtt
+    from providers.parakeet import TranscriptSegment
+
+    content = caption_path.read_text(encoding="utf-8", errors="replace")
+    parser = parse_vtt if caption_path.suffix.lower() == ".vtt" else parse_srt
+    captions = parser(content)
+    if not captions:
+        return None
+    return Transcript(
+        segments=[TranscriptSegment(start=c.start, end=c.end, text=c.text, confidence=1.0) for c in captions],
+        language="en",
+        duration_seconds=captions[-1].end,
+    )
+
+
+def _transcribe_or_use_captions(path: Path, provider_name: str, device: str,
+                               captions_file: Optional[str] = None) -> Optional[Transcript]:
+    """Prefer source captions; otherwise run the configured local STT model."""
+    if captions_file:
+        try:
+            caption_transcript = _transcript_from_captions(captions_file)
+            if caption_transcript and caption_transcript.segments:
+                return caption_transcript
+        except Exception as exc:
+            console.print(f"[yellow]Could not use downloaded captions: {exc}[/yellow]")
+    stt = get_provider(provider_name, {"device": device})
+    try:
+        return stt.transcribe(str(path))
+    finally:
+        close = getattr(stt, "close", None)
+        if callable(close):
+            close()
+
+
+def _diarize_transcript(path: Path, transcript: Optional[Transcript], enabled: bool) -> tuple[Optional[Transcript], dict]:
+    """Best-effort speaker labeling; never treats speaker labels as visual identity."""
+    if not enabled or not transcript or not transcript.segments:
+        return transcript, {"status": "skipped", "reason": "disabled or no transcript segments"}
+    tmp_path = None
+    diarizer = None
+    try:
+        from providers.diarizer import DiarizerProvider, merge_transcript_with_diarization
+        from core.audio import extract_audio
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+        extract_audio(str(path), output_path=tmp_path)
+        diarizer = DiarizerProvider()
+        dia_result = diarizer.diarize(tmp_path)
+        transcript.segments = merge_transcript_with_diarization(transcript.segments, dia_result.segments)
+        return transcript, {"status": "completed", "speakers": dia_result.speakers}
+    except ImportError as exc:
+        console.print(f"[yellow]Diarization unavailable: {exc}[/yellow]")
+        return transcript, {"status": "unavailable", "reason": str(exc)}
+    except Exception as exc:
+        console.print(f"[yellow]Diarization failed: {exc}[/yellow]")
+        return transcript, {"status": "failed", "reason": str(exc)}
+    finally:
+        if diarizer is not None:
+            close = getattr(diarizer, "close", None)
+            if callable(close):
+                close()
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def _transcript_data(transcript: Optional[Transcript]) -> list[dict]:
+    if not transcript:
+        return []
+    return [segment.model_dump() if hasattr(segment, "model_dump") else {
+        "start": segment.start, "end": segment.end, "text": segment.text,
+        "confidence": getattr(segment, "confidence", None),
+        "speaker": getattr(segment, "speaker", None),
+    } for segment in transcript.segments]
+
+
+def _visual_prompt(prompt: Optional[str], read_text: bool, default: str) -> str:
+    """Add explicit, cautious text-reading instructions to the existing VLM pass."""
+    base = prompt or default
+    if not read_text:
+        return base
+    return (base + "\n\nAlso transcribe only clearly legible text visible in this frame. "
+            "Quote it exactly under a 'Visible text:' label, preserve line breaks where useful, "
+            "and mark uncertain characters as [unclear]. Do not guess obscured or unreadable text.")
+
+
+def _index_video_memory(cache, source_path: Path, run_dir: Path, result, transcript=None,
+                       segmentation: Optional[dict] = None, duration_seconds: float = 0.0,
+                       writer=None) -> dict:
+    """Persist synchronized evidence for later local retrieval."""
+    try:
+        from core.video_memory import VideoMemoryStore
+        timeline = _value_for_memory(result, "timeline", [])
+        summary = _value_for_memory(result, "summary", "")
+        entities = _value_for_memory(result, "entities", [])
+        transcript_segments = (list(transcript) if isinstance(transcript, list)
+                               else list(transcript.segments) if transcript else [])
+        if not transcript_segments:
+            transcript_file = run_dir / "transcript.txt"
+            if transcript_file.is_file():
+                import re
+                for line in transcript_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                    match = re.match(r"^\[(\d{1,2}):(\d{2})\]\s+(?:\[([^]]+)\]\s+)?(.*)$", line)
+                    if match and match.group(4).strip():
+                        start = int(match.group(1)) * 60 + int(match.group(2))
+                        transcript_segments.append({"start": start, "end": start + 0.01,
+                                                    "speaker": match.group(3), "text": match.group(4)})
+        store = VideoMemoryStore(cache._db_path)
+        indexed = store.build(str(source_path), run_dir, summary, timeline, entities,
+                              transcript_segments, segmentation, duration_seconds)
+        stage = {"status": "completed", **indexed}
+        _set_memory_stage(result, stage, str(Path(source_path).expanduser().resolve()))
+        cache.save_artifact(run_dir, "observations.json", _memory_serializable_result(result))
+        cache.save_artifact(run_dir, "video_memory.json", indexed)
+        if writer:
+            writer.emit("stage", {"name": "memory", **stage})
+            writer.emit("memory", indexed)
+        return stage
+    except Exception as exc:
+        stage = {"status": "failed", "reason": str(exc)}
+        _set_memory_stage(result, stage, str(Path(source_path).expanduser().resolve()))
+        try:
+            cache.save_artifact(run_dir, "observations.json", _memory_serializable_result(result))
+        except Exception:
+            pass
+        if writer:
+            writer.emit("stage", {"name": "memory", **stage})
+        console.print(f"[yellow]Video memory indexing failed: {exc}[/yellow]")
+        return stage
+
+
+def _set_memory_stage(result, stage: dict, source_path: str) -> None:
+    if isinstance(result, dict):
+        stages = result.get("stages")
+        if not isinstance(stages, dict):
+            stages = {}
+            result["stages"] = stages
+        stages["memory"] = stage
+        result["source_path"] = source_path
+        return
+    stages = getattr(result, "stages", None)
+    if isinstance(stages, dict):
+        stages["memory"] = stage
+    if hasattr(result, "source_path"):
+        result.source_path = source_path
+
+
+def _memory_serializable_result(result):
+    return result.model_dump() if hasattr(result, "model_dump") else result
+
+
+def _value_for_memory(value, key: str, default):
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
 class _EntityResult:
     """Helper to carry entities + tokens from _extract_entities."""
     def __init__(self, entities: list[str], tokens: TokenUsage):
@@ -68,7 +230,8 @@ def observe_cmd(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
     jsonl: bool = typer.Option(False, "--jsonl", help="Streaming JSONL output for agents/pipelines"),
     save_observations: bool = typer.Option(False, "--save-observations", help="Save observation as markdown ledger"),
-    transcribe_audio: bool = typer.Option(False, "--transcribe", "-t", help="Transcribe audio speech to text"),
+    transcribe_audio: bool = typer.Option(True, "--transcribe", "-t", help="Transcribe audio automatically when present"),
+    no_transcribe: bool = typer.Option(False, "--no-transcribe", help="Skip audio transcription"),
     stt_provider: str = typer.Option("parakeet", "--stt-provider", help=f"STT provider: {', '.join(list_providers())}"),
     keep_audio: bool = typer.Option(False, "--keep-audio", help="Save full soundtrack as audio.m4a"),
     grid: bool = typer.Option(False, "--grid", help="Generate 3x3 contact sheet from keyframes"),
@@ -78,15 +241,23 @@ def observe_cmd(
     dnn_model: str = typer.Option(None, "--dnn-model", help="ONNX model path for inline DNN inference during extraction"),
     cookies: str = typer.Option(None, "--cookies", help="Netscape cookie file for authenticated videos"),
     cookies_from_browser: str = typer.Option(None, "--cookies-from-browser", help="Read cookies from browser (chrome, firefox, edge, safari)"),
-    diarize_audio: bool = typer.Option(False, "--diarize", help="Add speaker labels via diarization"),
+    diarize_audio: bool = typer.Option(True, "--diarize", help="Add speaker labels when the optional diarizer is available"),
+    no_diarize: bool = typer.Option(False, "--no-diarize", help="Skip speaker diarization"),
     force: bool = typer.Option(False, "--force", "-f", help="Force reprocess (ignore cache)"),
     timestamps: str = typer.Option(None, "--timestamps", help="Extract frames at specific timestamps (comma-separated, e.g., '0:30,2:15,5:00')"),
     provider_name: str = typer.Option(None, "--provider", help="VLM provider: auto, lmstudio, ollama, llamacpp, openai, groq, together, vllm, localai"),
     segment: bool = typer.Option(None, "--segment", "-s", help="Run SAM segmentation on extracted frames (respects mode settings)"),
+    read_text: bool = typer.Option(False, "--read-text", help="Ask the VLM to transcribe clearly legible text in images/frames"),
+    memory_build: bool = typer.Option(False, "--memory", help="Build searchable audiovisual memory; transcribe/diarize, target one visual sample per 30s (max 300), and segment sampled frames"),
     raw_frames: bool = typer.Option(False, "--raw-frames", help="Skip VLM — return raw frame paths and audio timeline for vision-capable agents"),
     ground: Optional[str] = typer.Option(None, "--ground", "-g", help="Ground a query using LocateAnything-3B and merge results into the timeline"),
 ):
     """Analyze a video or image and return observations."""
+    global console
+    console = Console(stderr=json_output or jsonl)
+    if json_output and jsonl:
+        console.print("[red]Choose either --json or --jsonl, not both.[/red]")
+        raise typer.Exit(code=2)
     # Validate file exists or is URL
     from core.download import is_url
     input_path = Path(path)
@@ -98,9 +269,25 @@ def observe_cmd(
     # Load config
     config = load_config()
     mode_config = get_mode_config(config, mode)
+    if memory_build and (raw_frames or detail == "transcript"):
+        console.print("[red]--memory requires visual analysis; it cannot be combined with --raw-frames or --detail transcript.[/red]")
+        raise typer.Exit(code=2)
+    if memory_build:
+        transcribe_audio = not no_transcribe
+        diarize_audio = not no_diarize
+        if segment is None:
+            segment = True
+    elif no_transcribe:
+        transcribe_audio = False
+    if no_diarize:
+        diarize_audio = False
+    if raw_frames and read_text:
+        console.print("[red]--read-text requires VLM analysis and cannot be combined with --raw-frames.[/red]")
+        raise typer.Exit(code=2)
 
     # Resolve cookies
     cookies_file = cookies
+    owned_cookie_file = None
     if cookies_from_browser and not cookies_file:
         try:
             import browser_cookie3
@@ -114,6 +301,7 @@ def observe_cmd(
                 cookie_tmp.write(f"{domain}\tTRUE\t{c.path}\t{secure}\t{int(c.expires or 0)}\t{c.name}\t{c.value}\n")
             cookie_tmp.close()
             cookies_file = cookie_tmp.name
+            owned_cookie_file = cookie_tmp.name
             console.print(f"[dim]Loaded cookies from {cookies_from_browser}[/dim]")
         except ImportError:
             console.print("[yellow]browser-cookie3 not installed. Install with: pip install browser-cookie3[/yellow]")
@@ -121,6 +309,7 @@ def observe_cmd(
             console.print(f"[yellow]Failed to read browser cookies: {e}[/yellow]")
 
     # Download from URL if remote (native yt-dlp into openvision_HOME/downloads)
+    dl_result = {}
     if is_remote:
         from core.download import download_video
         from storage.paths import downloads_dir
@@ -139,6 +328,17 @@ def observe_cmd(
         except Exception as e:
             console.print(f"[red]Download failed:[/red] {e}")
             raise typer.Exit(code=1)
+        finally:
+            if owned_cookie_file:
+                try:
+                    os.unlink(owned_cookie_file)
+                except FileNotFoundError:
+                    pass
+    elif owned_cookie_file:
+        try:
+            os.unlink(owned_cookie_file)
+        except FileNotFoundError:
+            pass
 
     # Check GPU and potentially downgrade
     actual_mode, warning = auto_downgrade_mode(mode, config)
@@ -151,6 +351,20 @@ def observe_cmd(
     # Determine final params
     actual_fps = fps or mode_config.get("fps", 0.5)
     actual_max_frames = max_frames or mode_config.get("max_frames", 60)
+    # Balanced overviews stay concise for long-form material; explicit user
+    # budgets and detailed mode remain authoritative.
+    if not max_frames and mode != "detailed" and detail == "balanced":
+        try:
+            if probe(str(input_path))["duration_seconds"] > 120:
+                actual_max_frames = min(actual_max_frames, 12)
+        except Exception:
+            pass
+    if memory_build and not max_frames:
+        try:
+            duration = probe(str(input_path))["duration_seconds"]
+            actual_max_frames = max(actual_max_frames, min(300, int((duration + 29) // 30)))
+        except Exception:
+            pass
     actual_resolution = mode_config.get("resolution", 768)
 
     # Parse focus range
@@ -182,19 +396,23 @@ def observe_cmd(
         is_image = input_path.suffix.lower() in image_extensions
 
     if is_image:
-        _handle_image(input_path, question, prompt, json_output, config, actual_resolution, max_tokens, provider_name, jsonl)
+        _handle_image(input_path, question, prompt, json_output, config, actual_resolution, max_tokens,
+                      provider_name, jsonl, read_text)
     else:
         _handle_video(input_path, question, prompt, json_output, save_observations, transcribe_audio, diarize_audio, force,
                       config, mode, detail, actual_fps, actual_max_frames, actual_resolution, max_tokens, device,
                       focus_start, focus_end, cue_timestamps, provider_name, segment, raw_frames, ground, stt_provider,
-                      keep_audio, grid, text_anchors, viewer, report, dnn_model, jsonl)
+                      keep_audio, grid, text_anchors, viewer, report, dnn_model, jsonl,
+                      dl_result.get("subs_file"), memory_build, read_text,
+                      no_transcribe, no_diarize)
 
 
 def _handle_image(path: Path, question: Optional[str], custom_prompt: Optional[str],
                   json_output: bool, config: dict, resolution: int,
                   override_max_tokens: Optional[int] = None,
                   provider_name: Optional[str] = None,
-                  jsonl: bool = False):
+                  jsonl: bool = False,
+                  read_text: bool = False):
     """Process a single image."""
     from core.stream import create_jsonl_writer
     writer = create_jsonl_writer(jsonl)
@@ -227,9 +445,13 @@ def _handle_image(path: Path, question: Optional[str], custom_prompt: Optional[s
     # Determine prompt: custom_prompt > question > default
     effective_prompt = None
     if custom_prompt:
-        effective_prompt = custom_prompt
+        effective_prompt = _visual_prompt(custom_prompt, read_text, "Describe this image accurately and concisely.")
     elif question:
-        effective_prompt = f"Answer this question about the image: {question}\nBe concise and specific."
+        effective_prompt = _visual_prompt(
+            f"Answer this question about the image: {question}\nBe concise and specific.",
+            read_text, "Describe this image accurately and concisely.")
+    elif read_text:
+        effective_prompt = _visual_prompt(None, True, "Describe important objects, people, and actions in this image.")
 
     try:
         response = provider.describe_image(image, effective_prompt)
@@ -244,16 +466,94 @@ def _handle_image(path: Path, question: Optional[str], custom_prompt: Optional[s
     result = ImageResult(
         description=description,
         objects=[],
-        text_detected=[],
+        text_detected=_visible_text_lines(description) if read_text else [],
         confidence="medium",
         tokens={"prompt_tokens": tokens.prompt_tokens, "completion_tokens": tokens.completion_tokens, "reasoning_tokens": tokens.reasoning_tokens, "total_tokens": tokens.total_tokens},
+        stages={"visual": {"status": "completed"},
+                "text_reading": {"status": "completed" if read_text else "skipped",
+                                 "method": "vlm_prompt" if read_text else None}},
     )
 
     if json_output:
-        console.print(json.dumps(result.model_dump(), indent=2))
-    else:
+        typer.echo(json.dumps(result.model_dump(), indent=2))
+    elif writer:
+        writer.emit("stage", {"name": "visual", **result.stages["visual"]})
+        writer.emit("stage", {"name": "text_reading", **result.stages["text_reading"]})
+        writer.emit("result", result.model_dump())
+        writer.emit_done({"type": "image", "has_text": bool(result.text_detected)})
+        writer.flush()
+    elif not jsonl:
         console.print(Panel(description, title="[bold cyan]Image Observation[/bold cyan]"))
         console.print(f"[dim]Tokens: {_fmt_tokens(tokens)}[/dim]")
+
+
+def _visible_text_lines(description: str) -> list[str]:
+    """Read the explicit Visible text section emitted under --read-text."""
+    import re
+    match = re.search(r"(?im)^\s*Visible text:\s*(.*?)(?=^\s*[^\n:]{1,40}:|\Z)", description or "", re.S)
+    if not match:
+        return []
+    value = match.group(1).strip()
+    if not value or value.casefold() in {"none", "none visible", "no legible text", "[none]"}:
+        return []
+    return [line.strip(" -*\t") for line in value.splitlines() if line.strip(" -*\t")]
+
+
+def _handle_audio_only(path: Path, metadata: dict, cache: RunCache, key: str,
+                       transcribe: bool, diarize: bool, stt_provider: str,
+                       device: str, subtitles_file: Optional[str], json_output: bool,
+                       jsonl: bool, writer, memory_build: bool) -> None:
+    """Run the compatible audio stages when a source has no video stream."""
+    from models import ObserveResult, TimelineEntry
+    run_dir = cache.create_run(key, metadata)
+    transcript = None
+    stages = {"visual": {"status": "skipped", "reason": "input contains no video stream"},
+              "segmentation": {"status": "skipped", "reason": "input contains no video frames"},
+              "grounding": {"status": "skipped", "reason": "input contains no video frames"}}
+    if transcribe:
+        try:
+            transcript = _transcribe_or_use_captions(path, stt_provider, device, subtitles_file)
+            stages["transcription"] = {"status": "completed" if transcript and transcript.segments else "empty"}
+        except Exception as exc:
+            stages["transcription"] = {"status": "failed", "reason": str(exc)}
+            console.print(f"[yellow]Audio transcription failed: {exc}[/yellow]")
+    else:
+        stages["transcription"] = {"status": "skipped", "reason": "disabled"}
+    transcript, stages["diarization"] = _diarize_transcript(path, transcript, diarize)
+    timeline = [TimelineEntry(
+        time_seconds=segment.start, timestamp=_fmt_time(segment.start),
+        observation=f"[SPEECH] {'[' + segment.speaker + '] ' if segment.speaker else ''}{segment.text}",
+        modality="audio") for segment in (transcript.segments if transcript else [])]
+    summary = (f"Audio-only analysis: {len(timeline)} transcript segments."
+               if timeline else "Audio-only input; no transcript was produced.")
+    result = ObserveResult(
+        summary=summary, timeline=timeline, entities=[], artifacts_dir=str(run_dir),
+        confidence="medium" if timeline else "low", audio_segments=_transcript_data(transcript),
+        stages=stages, duration_seconds=metadata.get("duration_seconds", 0),
+    )
+    cache.save_artifact(run_dir, "observations.json", result.model_dump())
+    _index_video_memory(cache, path, run_dir, result, transcript,
+                        duration_seconds=metadata.get("duration_seconds", 0), writer=writer)
+    cache.save_text(run_dir, "summary.md", f"# Observation Summary\n\n{summary}\n")
+    if transcript and transcript.segments:
+        transcript_text = "\n".join(
+            f"[{_fmt_time(s.start)}] {'[' + s.speaker + '] ' if s.speaker else ''}{s.text}"
+            for s in transcript.segments)
+        cache.save_text(run_dir, "transcript.txt", transcript_text)
+    if writer:
+        writer.emit("stage", {"name": "visual", **stages["visual"]})
+        writer.emit("stage", {"name": "transcription", **stages["transcription"]})
+        writer.emit("stage", {"name": "diarization", **stages["diarization"]})
+        for segment in result.audio_segments:
+            writer.emit_transcript(segment["start"], segment["end"], segment["text"], segment.get("speaker"))
+        writer.emit("result", result.model_dump())
+        writer.emit_summary(summary, [])
+        writer.emit_done({"timeline_entries": len(timeline), "has_transcript": bool(timeline)})
+        writer.flush()
+    if json_output:
+        typer.echo(json.dumps(result.model_dump(), indent=2))
+    elif not jsonl:
+        _display_observation(result.model_dump())
 
 
 def _extract_focus_range(path: str, start: Optional[float], end: Optional[float],
@@ -329,21 +629,49 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
                   generate_viewer: bool = False,
                   generate_report: bool = False,
                   dnn_model: str = None,
-                  jsonl: bool = False):
-    """Process a video file."""
+                  jsonl: bool = False,
+                  subtitles_file: Optional[str] = None,
+                  memory_build: bool = False,
+                  read_text: bool = False,
+                  no_transcribe: bool = False,
+                  no_diarize: bool = False):
+    """Process audiovisual media through one cached, evidence-preserving pipeline."""
     from core.stream import create_jsonl_writer
     writer = create_jsonl_writer(jsonl)
     if writer:
         writer.emit_start(str(path), mode=mode)
 
     # Check cache (stable under openvision_HOME when relative)
-    cache_dir = config.get("cache", {}).get("directory", "runs")
-    if not Path(cache_dir).is_absolute():
-        from storage.paths import runs_dir
-        cache_dir = str(runs_dir(config))
+    from storage.paths import run_cache_dir
+    cache_dir = str(run_cache_dir(config))
     cache = RunCache(cache_dir)
-    key = cache.cache_key(str(path), mode, fps, resolution)
     mode_config = get_mode_config(config, mode)
+    seg_mode = mode_config.get("segmentation", False)
+    should_segment = segment_flag is True or (segment_flag is None and seg_mode is True)
+    vlm_config = config.get("models", {}).get("vlm", {})
+    segmentation_config = config.get("models", {}).get("segmentation", {})
+    cache_options = {
+        "question": question, "prompt": custom_prompt, "detail": detail,
+        "max_frames": max_frames, "focus_start": focus_start, "focus_end": focus_end,
+        "cue_timestamps": cue_timestamps, "transcribe": transcribe_audio and not no_transcribe,
+        "diarize": diarize_audio and not no_diarize, "read_text": read_text, "segment": should_segment,
+        "ground": ground_query, "raw_frames": raw_frames, "memory": memory_build,
+        "subtitles": (str(Path(subtitles_file).resolve()), Path(subtitles_file).stat().st_size,
+                      Path(subtitles_file).stat().st_mtime_ns)
+                     if subtitles_file and Path(subtitles_file).is_file() else None,
+        "stt_provider": stt_provider, "stt_device": stt_device,
+        "max_tokens": override_max_tokens, "save_observations": save_observations,
+        "keep_audio": keep_audio, "grid": generate_grid, "text_anchors": text_anchors,
+        "viewer": generate_viewer, "report": generate_report, "dnn_model": dnn_model,
+        "vlm": {key: (provider_name if key == "provider" and provider_name else vlm_config.get(key))
+                for key in ("provider", "model", "base_url")},
+        "segmentation": {key: segmentation_config.get(key) for key in ("provider", "model", "fallback_model")},
+    }
+    key = cache.cache_key(str(path), mode, fps, resolution, options=cache_options)
+    if force and key and cache.has_cached(key):
+        import hashlib
+        import time
+        key = hashlib.sha256(f"{key}:{time.time_ns()}".encode()).hexdigest()[:16]
 
     if not force and key and cache.has_cached(key):
         cached_dir = cache.get_run(key)
@@ -351,9 +679,20 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
         if cached_file and cached_file.exists():
             import json as j
             data = j.loads(cached_file.read_text())
+            _index_video_memory(cache, path, cached_dir, data,
+                                transcript=data.get("audio_segments", []),
+                                segmentation=data.get("segmentation"),
+                                duration_seconds=data.get("duration_seconds", 0), writer=writer)
+            if writer:
+                for name, stage in data.get("stages", {}).items():
+                    writer.emit("stage", {"name": name, **stage})
+                writer.emit("result", data)
+                writer.emit_summary(data.get("summary", ""), data.get("entities", []))
+                writer.emit_done({"cached": True, "timeline_entries": len(data.get("timeline", []))})
+                writer.flush()
             if json_output:
-                console.print(j.dumps(data, indent=2))
-            else:
+                typer.echo(j.dumps(data, indent=2))
+            elif not jsonl:
                 console.print("[green]Using cached result.[/green]")
                 _display_observation(data)
             return
@@ -361,6 +700,13 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
     # Probe video
     log_vram("video_probe")
     video_meta = probe(str(path))
+    if not video_meta.get("has_video", True):
+        _handle_audio_only(path, video_meta, cache, key, transcribe_audio and not no_transcribe,
+                           diarize_audio and not no_diarize, stt_provider, stt_device,
+                           subtitles_file, json_output, jsonl, writer, memory_build)
+        return
+    if not video_meta.get("has_audio") and not subtitles_file:
+        transcribe_audio = False
     if writer:
         writer.emit_probe(video_meta)
 
@@ -380,7 +726,7 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
     # Smart frame budget based on duration
     duration = video_meta["duration_seconds"]
     auto_max = auto_fps(duration)
-    actual_max = min(max_frames, auto_max)
+    actual_max = min(max_frames, max(auto_max, max_frames if memory_build else 0))
     console.print(f"[dim]Video: {duration:.0f}s, budget: {actual_max} frames[/dim]")
 
     # Estimate cost
@@ -398,7 +744,7 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
     if has_focus:
         from core.video import auto_fps_focus
         focus_duration = (focus_end or duration) - (focus_start or 0)
-        focus_max = auto_fps_focus(focus_duration)
+        focus_max = min(max_frames, auto_fps_focus(focus_duration))
         console.print(f"[dim]Focus range: {_fmt_time(focus_start or 0)} - {_fmt_time(focus_end or duration)} ({focus_duration:.0f}s, budget: {focus_max} frames)[/dim]")
         frames = _extract_focus_range(str(path), focus_start, focus_end, focus_max, resolution)
     elif detail == "transcript":
@@ -447,38 +793,22 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
         run_dir = cache.create_run(key, video_meta)
         transcript = None
         timeline = []
+        stages = {"visual": {"status": "skipped", "reason": "transcript-only mode"}}
 
         if transcribe_audio:
-            console.print(f"[dim]Transcribing audio with {stt_provider.title()} ({stt_device})...[/dim]")
-            whisper = get_provider(stt_provider, {"device": stt_device})
-            transcript = whisper.transcribe(str(path))
-            if transcript and transcript.segments:
-                console.print(f"[dim]Transcribed {len(transcript.segments)} speech segments[/dim]")
-
-        if diarize_audio and transcript and transcript.segments:
             try:
-                from providers.diarizer import DiarizerProvider, merge_transcript_with_diarization
-                from core.audio import extract_audio
+                console.print(f"[dim]Transcribing audio with {stt_provider.title()} ({stt_device})...[/dim]")
+                transcript = _transcribe_or_use_captions(path, stt_provider, stt_device, subtitles_file)
+                stages["transcription"] = {"status": "completed" if transcript and transcript.segments else "empty"}
+            except Exception as exc:
+                stages["transcription"] = {"status": "failed", "reason": str(exc)}
+                console.print(f"[yellow]Audio transcription failed: {exc}[/yellow]")
+        else:
+            stages["transcription"] = {"status": "skipped", "reason": "disabled"}
 
-                console.print("[dim]Running speaker diarization...[/dim]")
-                tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-                tmp_path = tmp.name
-                tmp.close()
-                try:
-                    extract_audio(str(path), output_path=tmp_path)
-                    diarizer = DiarizerProvider()
-                    dia_result = diarizer.diarize(tmp_path)
-                    transcript.segments = merge_transcript_with_diarization(
-                        transcript.segments, dia_result.segments
-                    )
-                    console.print(f"[dim]Found {dia_result.num_speakers} speakers: {', '.join(dia_result.speakers)}[/dim]")
-                finally:
-                    if os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
-            except ImportError as e:
-                console.print(f"[yellow]Diarization unavailable: {e}[/yellow]")
-            except Exception as e:
-                console.print(f"[yellow]Diarization failed: {e}[/yellow]")
+        transcript, stages["diarization"] = _diarize_transcript(path, transcript, diarize_audio)
+        stages["segmentation"] = {"status": "skipped", "reason": "transcript-only mode"}
+        stages["grounding"] = {"status": "skipped", "reason": "transcript-only mode"}
 
         if transcript and transcript.segments:
             for seg in transcript.segments:
@@ -489,6 +819,7 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
                     timestamp=ts,
                     observation=f"[SPEECH] {speaker_prefix}{seg.text}",
                     frame_path=None,
+                    modality="audio",
                 ))
 
         # Build minimal summary
@@ -502,11 +833,15 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
             timeline=timeline,
             entities=[],
             artifacts_dir=str(run_dir),
-            confidence="medium",
+            confidence="medium" if transcript and transcript.segments else "low",
             tokens={"prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0, "total_tokens": 0},
+            audio_segments=_transcript_data(transcript), stages=stages,
+            duration_seconds=video_meta.get("duration_seconds", 0),
         )
 
         cache.save_artifact(run_dir, "observations.json", result.model_dump())
+        _index_video_memory(cache, path, run_dir, result, transcript,
+                            duration_seconds=video_meta.get("duration_seconds", 0), writer=writer)
         cache.save_text(run_dir, "summary.md", f"# Observation Summary\n\n{summary}\n")
 
         timeline_md = "# Timeline\n\n"
@@ -520,6 +855,16 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
                 for s in transcript.segments
             )
             cache.save_text(run_dir, "transcript.txt", transcript_text)
+            if writer:
+                for seg in transcript.segments:
+                    writer.emit_transcript(seg.start, seg.end, seg.text, getattr(seg, "speaker", None))
+        if writer:
+            for name, stage in result.stages.items():
+                writer.emit("stage", {"name": name, **stage})
+            writer.emit_summary(summary, [])
+            writer.emit("result", result.model_dump())
+            writer.emit_done({"timeline_entries": len(timeline), "has_transcript": bool(transcript and transcript.segments)})
+            writer.flush()
 
         if save_observations:
             _save_observation_md(path, result, config, transcript)
@@ -527,8 +872,8 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
         log_vram("observation_complete")
 
         if json_output:
-            console.print(json.dumps(result.model_dump(), indent=2))
-        else:
+            typer.echo(json.dumps(result.model_dump(), indent=2))
+        elif not jsonl:
             _display_observation(result.model_dump())
         return
 
@@ -638,6 +983,17 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
     transcript = None
     if raw_frames:
         from models import RawFrame, TimelineEntry
+        if transcribe_audio and subtitles_file and Path(subtitles_file).is_file():
+            try:
+                transcript = _transcript_from_captions(subtitles_file)
+            except Exception as e:
+                console.print(f"[yellow]Could not use downloaded captions: {e}[/yellow]")
+        if transcribe_audio and transcript is None:
+            try:
+                transcript = _transcribe_or_use_captions(input_path, stt_provider, device)
+            except Exception as e:
+                console.print(f"[yellow]Audio transcription failed: {e}[/yellow]")
+        transcript, diarization_stage = _diarize_transcript(path, transcript, diarize_audio)
         raw = [
             RawFrame(index=i, timestamp=f["timestamp"], path=f["path"])
             for i, f in enumerate(frames)
@@ -660,18 +1016,34 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
             timeline=timeline,
             entities=[],
             artifacts_dir=str(run_dir),
-            confidence="high",
+            confidence="medium" if frames else "low",
             raw_frames=raw,
+            audio_segments=_transcript_data(transcript),
+            stages={"visual": {"status": "skipped", "reason": "raw-frames mode"},
+                    "transcription": {"status": "completed" if transcript and transcript.segments else "empty" if transcribe_audio else "skipped"},
+                    "diarization": diarization_stage,
+                    "segmentation": {"status": "skipped", "reason": "raw-frames mode"},
+                    "grounding": {"status": "skipped", "reason": "raw-frames mode"}},
+            duration_seconds=video_meta.get("duration_seconds", 0),
         )
 
         cache.save_artifact(run_dir, "observations.json", result.model_dump())
+        _index_video_memory(cache, path, run_dir, result, transcript,
+                            duration_seconds=video_meta.get("duration_seconds", 0), writer=writer)
+        if writer:
+            for name, stage in result.stages.items():
+                writer.emit("stage", {"name": name, **stage})
+            writer.emit("result", result.model_dump())
+            writer.emit_summary(result.summary, [])
+            writer.emit_done({"raw_frames": len(raw), "transcript_segments": len(timeline)})
+            writer.flush()
 
         if save_observations:
             _save_observation_md(path, result, config, transcript)
 
         if json_output:
-            console.print(json.dumps(result.model_dump(), indent=2))
-        else:
+            typer.echo(json.dumps(result.model_dump(), indent=2))
+        elif not jsonl:
             console.print(f"[green]Extracted {len(frames)} raw frames to {run_dir}[/green]")
             if transcript and transcript.segments:
                 console.print(f"[dim]Audio timeline: {len(transcript.segments)} segments with speaker labels[/dim]")
@@ -687,119 +1059,98 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
     if provider_name:
         vlm_config["provider"] = provider_name
 
-    try:
-        provider = ProviderRegistry.create(vlm_config)
-    except ValueError as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(code=1)
-
-    if not provider.check_health():
-        provider_name_display = vlm_config.get("provider", "auto")
-        console.print(f"[red]Error: {provider_name_display} is not running or not reachable.[/red]")
-        console.print("Start your VLM provider and load a vision model, then try again.")
-        raise typer.Exit(code=1)
-
-    log_vram("vlm_observation")
-
-    # Process frames with VLM
+    provider = None
+    visual_stage = {"status": "completed"}
     timeline = []
     total_tokens = TokenUsage()
+    try:
+        provider = ProviderRegistry.create(vlm_config)
+        if not provider.check_health():
+            raise RuntimeError(f"{vlm_config.get('provider', 'VLM')} is not reachable")
+    except Exception as exc:
+        visual_stage = {"status": "failed", "reason": str(exc)}
+        console.print(f"[yellow]Visual analysis unavailable: {exc}[/yellow]")
 
-    with Progress(
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        console=console,
-    ) as progress:
-        task = progress.add_task(
-            description=f"Analyzing {len(frames)} frames with VLM...",
-            total=len(frames),
-        )
-
-        for i, frame in enumerate(frames):
-            progress.update(task, advance=1, description=f"Frame {i+1}/{len(frames)} at {frame['timestamp_str']}")
-
-            # Determine prompt: custom_prompt > question > default
-            if custom_prompt:
-                resp = provider.describe_image(frame["image"], custom_prompt)
-            elif question:
-                resp = provider.describe_image(frame["image"], f"Answer this question about the image: {question}\nBe concise and specific.")
-            else:
-                resp = provider.describe_image(
-                    frame["image"],
-                    "Describe what is happening in this frame. Focus on objects, people, actions. Be concise (1-2 sentences)."
-                )
-
-            # Accumulate tokens
-            total_tokens.prompt_tokens += resp.tokens.prompt_tokens
-            total_tokens.completion_tokens += resp.tokens.completion_tokens
-            total_tokens.reasoning_tokens += resp.tokens.reasoning_tokens
-            total_tokens.total_tokens += resp.tokens.total_tokens
-
-            timeline.append(TimelineEntry(
-                time_seconds=frame["timestamp"],
-                timestamp=frame["timestamp_str"],
-                observation=resp.content,
-                frame_path=frame_paths[i] if i < len(frame_paths) else None,
-            ))
+    if provider:
+        log_vram("vlm_observation")
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            console=console,
+        ) as progress:
+            task = progress.add_task(description=f"Analyzing {len(frames)} frames with VLM...", total=len(frames))
+            failed_frames = 0
+            for i, frame in enumerate(frames):
+                progress.update(task, advance=1, description=f"Frame {i+1}/{len(frames)} at {frame['timestamp_str']}")
+                default_prompt = "Describe what is happening in this frame. Focus on objects, people, and actions. Be concise (1-2 sentences)."
+                if question:
+                    default_prompt = f"Answer this question about the image: {question}\nBe concise and specific."
+                frame_prompt = _visual_prompt(custom_prompt, read_text, default_prompt)
+                try:
+                    resp = provider.describe_image(frame["image"], frame_prompt)
+                    total_tokens.prompt_tokens += resp.tokens.prompt_tokens
+                    total_tokens.completion_tokens += resp.tokens.completion_tokens
+                    total_tokens.reasoning_tokens += resp.tokens.reasoning_tokens
+                    total_tokens.total_tokens += resp.tokens.total_tokens
+                    content = (resp.content or "").strip()
+                    if content and not content.lower().startswith(("could not connect", "request to ", "unexpected error contacting")) and " returned http " not in content.lower():
+                        timeline.append(TimelineEntry(
+                            time_seconds=frame["timestamp"], timestamp=frame["timestamp_str"],
+                            observation=content, frame_path=frame_paths[i] if i < len(frame_paths) else None))
+                    else:
+                        failed_frames += 1
+                except Exception as exc:
+                    failed_frames += 1
+                    console.print(f"[yellow]VLM failed on frame {frame['timestamp_str']}: {exc}[/yellow]")
+            if failed_frames:
+                visual_stage = {"status": "partial" if timeline else "failed", "failed_frames": failed_frames}
+            if timeline and visual_stage["status"] == "completed":
+                visual_stage["frames"] = len(timeline)
 
     # Extract entities and generate summary using VLM
     timeline_text = "\n".join(f"{t.timestamp}: {t.observation}" for t in timeline)
-    entities_resp = _extract_entities(provider, timeline_text)
+    entities_resp = _extract_entities(provider, timeline_text) if provider and timeline_text.strip() else _EntityResult([], TokenUsage())
     total_tokens.prompt_tokens += entities_resp.tokens.prompt_tokens
     total_tokens.completion_tokens += entities_resp.tokens.completion_tokens
     total_tokens.reasoning_tokens += entities_resp.tokens.reasoning_tokens
     total_tokens.total_tokens += entities_resp.tokens.total_tokens
 
-    if question:
+    if not timeline:
+        summary = "No reliable visual observations were returned by the selected model. Check model output and frame decoding, then retry."
+    elif question:
         summary = _build_qa_summary(timeline, question)
+    elif provider:
+        try:
+            summary_resp = _generate_summary(provider, timeline)
+            summary = summary_resp.content
+            total_tokens.prompt_tokens += summary_resp.tokens.prompt_tokens
+            total_tokens.completion_tokens += summary_resp.tokens.completion_tokens
+            total_tokens.reasoning_tokens += summary_resp.tokens.reasoning_tokens
+            total_tokens.total_tokens += summary_resp.tokens.total_tokens
+        except Exception as exc:
+            summary = f"Visual observations collected from {len(timeline)} frames; summary generation failed: {exc}"
+            visual_stage = {"status": "partial", "reason": "summary generation failed", "frames": len(timeline)}
     else:
-        summary_resp = _generate_summary(provider, timeline)
-        summary = summary_resp.content
-        total_tokens.prompt_tokens += summary_resp.tokens.prompt_tokens
-        total_tokens.completion_tokens += summary_resp.tokens.completion_tokens
-        total_tokens.reasoning_tokens += summary_resp.tokens.reasoning_tokens
-        total_tokens.total_tokens += summary_resp.tokens.total_tokens
+        summary = "Visual model unavailable; returning any successfully processed audio evidence."
 
-    provider.close()
+    if provider:
+        provider.close()
 
     # Transcribe audio if requested
     transcript = None
+    transcription_stage = {"status": "skipped", "reason": "no audio stream or disabled"}
     if transcribe_audio:
-        console.print(f"[dim]Transcribing audio with {stt_provider.title()} ({stt_device})...[/dim]")
-        whisper = get_provider(stt_provider, {"device": stt_device})
-        import time as _time
-        transcript = whisper.transcribe(str(path))
-
-        if transcript and transcript.segments:
-            console.print(f"[dim]Transcribed {len(transcript.segments)} speech segments[/dim]")
-
-    # Apply diarization if requested
-    if diarize_audio and transcript and transcript.segments:
         try:
-            from providers.diarizer import DiarizerProvider, merge_transcript_with_diarization
-            from core.audio import extract_audio
-
-            console.print("[dim]Running speaker diarization...[/dim]")
-            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-            tmp_path = tmp.name
-            tmp.close()
-
-            try:
-                extract_audio(str(path), output_path=tmp_path)
-                diarizer = DiarizerProvider()
-                dia_result = diarizer.diarize(tmp_path)
-                transcript.segments = merge_transcript_with_diarization(
-                    transcript.segments, dia_result.segments
-                )
-                console.print(f"[dim]Found {dia_result.num_speakers} speakers: {', '.join(dia_result.speakers)}[/dim]")
-            finally:
-                if os.path.exists(tmp_path):
-                    os.unlink(tmp_path)
-        except ImportError as e:
-            console.print(f"[yellow]Diarization unavailable: {e}[/yellow]")
-        except Exception as e:
-            console.print(f"[yellow]Diarization failed: {e}[/yellow]")
+            console.print(f"[dim]Transcribing audio with {stt_provider.title()} ({stt_device})...[/dim]")
+            transcript = _transcribe_or_use_captions(path, stt_provider, stt_device, subtitles_file)
+            transcription_stage = {"status": "completed" if transcript and transcript.segments else "empty"}
+            if transcript and transcript.segments:
+                console.print(f"[dim]Transcribed {len(transcript.segments)} speech segments[/dim]")
+        except Exception as exc:
+            transcription_stage = {"status": "failed", "reason": str(exc)}
+            console.print(f"[yellow]Audio transcription failed: {exc}[/yellow]")
+    transcript, diarization_stage = _diarize_transcript(path, transcript, diarize_audio)
 
     # Merge transcript segments into timeline (interleaved by timestamp)
     if transcript and transcript.segments:
@@ -812,6 +1163,7 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
                 timestamp=ts,
                 observation=f"[SPEECH] {speaker_prefix}{seg.text}",
                 frame_path=None,
+                modality="audio",
             ))
 
         # Interleave visual + audio entries by timestamp
@@ -820,11 +1172,31 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
         timeline = all_entries
 
     # Run SAM segmentation if requested or mode requires it
-    segmentation_data = None
-    seg_mode = mode_config.get("segmentation", False)
-    should_segment = segment_flag is True or (segment_flag is None and seg_mode is True)
+    segmentation_data = {"status": "skipped", "reason": "disabled by mode/options", "frames_processed": 0, "objects": []}
     if should_segment and frames:
-        segmentation_data = _run_segmentation(path, frames, config, mode)
+        segmentation_data = _run_segmentation(path, frames, config, mode, run_dir,
+                                              entities_resp.entities, memory_build)
+
+    if isinstance(segmentation_data, dict):
+        for obj in segmentation_data.get("objects", []):
+            time_seconds = float(obj.get("time_seconds", 0) or 0)
+            nearest = min(frames, key=lambda frame: abs(float(frame["timestamp"]) - time_seconds)) if frames else None
+            label = obj.get("label") or "object"
+            score = float(obj.get("score", 0) or 0)
+            timeline.append(TimelineEntry(
+                time_seconds=time_seconds, timestamp=_fmt_time(time_seconds),
+                observation=f"[SEGMENT] {label} ({score:.0%})",
+                frame_path=nearest.get("path") if nearest else None,
+                modality="segmentation",
+                boxes=[{"bbox": obj.get("bbox", []), "label": label, "score": score,
+                        "mask_path": obj.get("mask_path")}],
+            ))
+
+    if ground_query:
+        grounding_stage = _run_grounding(ground_query, frames, timeline, run_dir, config)
+    else:
+        grounding_stage = {"status": "skipped", "reason": "not requested"}
+    timeline.sort(key=lambda entry: entry.time_seconds)
 
     # Build result
     result = ObserveResult(
@@ -832,16 +1204,21 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
         timeline=timeline,
         entities=entities_resp.entities,
         artifacts_dir=str(run_dir),
-        confidence="medium",
+        confidence="medium" if timeline else "low",
         tokens={"prompt_tokens": total_tokens.prompt_tokens, "completion_tokens": total_tokens.completion_tokens, "reasoning_tokens": total_tokens.reasoning_tokens, "total_tokens": total_tokens.total_tokens},
+        audio_segments=_transcript_data(transcript),
+        segmentation=segmentation_data,
+        stages={"visual": visual_stage, "transcription": transcription_stage,
+                "diarization": diarization_stage,
+                "segmentation": {key: value for key, value in segmentation_data.items() if key != "objects"},
+                "grounding": grounding_stage},
+        duration_seconds=video_meta.get("duration_seconds", 0),
     )
-
-    # Run LocateAnything grounding if requested
-    if ground_query:
-        _run_grounding(ground_query, frames, timeline, run_dir, config)
 
     # Save artifacts
     cache.save_artifact(run_dir, "observations.json", result.model_dump())
+    _index_video_memory(cache, path, run_dir, result, transcript, segmentation_data,
+                        video_meta.get("duration_seconds", 0), writer)
     cache.save_text(run_dir, "summary.md", f"# Observation Summary\n\n{summary}\n")
 
     # Timeline markdown
@@ -888,17 +1265,20 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
 
     # Emit JSONL summary and done
     if writer:
-        writer.emit_summary(result.summary, [e.entity for e in result.entities])
+        for name, stage in result.stages.items():
+            writer.emit("stage", {"name": name, **stage})
+        writer.emit("result", result.model_dump())
+        writer.emit_summary(result.summary, [str(entity) for entity in result.entities])
         writer.emit_done({"timeline_entries": len(result.timeline), "entities": len(result.entities),
-                          "has_transcript": transcript is not None and transcript.transcript is not None})
+                          "has_transcript": bool(transcript and transcript.segments)})
         writer.flush()
 
     log_vram("observation_complete")
 
     # Output
     if json_output:
-        console.print(json.dumps(result.model_dump(), indent=2))
-    else:
+        typer.echo(json.dumps(result.model_dump(), indent=2))
+    elif not jsonl:
         _display_observation(result.model_dump())
 
 
@@ -979,13 +1359,14 @@ def _build_qa_summary(timeline: list, question: str) -> str:
     return f"Based on video analysis: {best}"
 
 
-def _run_segmentation(path: Path, frames: list, config: dict, mode: str) -> Optional[dict]:
+def _run_segmentation(path: Path, frames: list, config: dict, mode: str, run_dir: Path,
+                      entities: Optional[list[str]] = None, memory_build: bool = False) -> Optional[dict]:
     """Run SAM segmentation on extracted frames. Returns segmentation data or None."""
     try:
-        from providers.sam import SamProvider
-    except ImportError:
-        console.print("[yellow]Segmentation unavailable: install ultralytics (pip install ultralytics)[/yellow]")
-        return None
+        from providers.sam import create_segmenter
+    except ImportError as exc:
+        console.print(f"[yellow]Segmentation unavailable: {exc}[/yellow]")
+        return {"status": "unavailable", "reason": str(exc), "frames_processed": 0, "objects": []}
 
     mode_config = get_mode_config(config, mode)
     resolution = mode_config.get("resolution", 768)
@@ -993,29 +1374,38 @@ def _run_segmentation(path: Path, frames: list, config: dict, mode: str) -> Opti
 
     log_vram("before_segmentation")
     sam_config = config.get("models", {}).get("segmentation", {})
-    provider = SamProvider(sam_config)
+    try:
+        provider = create_segmenter(sam_config)
+    except Exception as exc:
+        console.print(f"[yellow]Segmentation unavailable: {exc}[/yellow]")
+        return {"status": "unavailable", "reason": str(exc), "frames_processed": 0, "objects": []}
 
     try:
-        # Use the entities from VLM to know what to segment, or segment generically
-        # For now, segment all frames to detect objects
-        seg_frames = [(f["timestamp"], f["image"]) for f in frames[:20]]  # Cap at 20 frames for SAM
+        # Persist mask artifacts with the run and prompt segmentation with
+        # concrete entities; an unlabelled "all objects" result is hard to use.
+        frame_cap = 12 if memory_build else 20
+        seg_frames = [(f["timestamp"], f["image"]) for f in frames[:frame_cap]]
+        prompts = (entities or [])[:3]
+        if not prompts:
+            prompts = ["person"]
         console.print(f"[dim]Running SAM segmentation on {len(seg_frames)} frames...[/dim]")
-
-        # Create temp dir for masks
-        import tempfile
-        with tempfile.TemporaryDirectory() as tmpdir:
-            from pathlib import Path as _P
+        objects = []
+        for prompt in prompts:
             result = provider.segment_frames(
                 seg_frames,
-                "all objects",  # Generic prompt to segment everything
-                _P(tmpdir),
+                prompt,
+                run_dir,
             )
-            log_vram("after_segmentation")
-            return result
+            for obj in result.get("objects", []):
+                obj["label"] = prompt
+            objects.extend(result.get("objects", []))
+        log_vram("after_segmentation")
+        return {"status": "completed", "frames_processed": len(seg_frames), "objects": objects}
     except Exception as e:
         console.print(f"[yellow]Segmentation failed: {e}[/yellow]")
         log_vram("after_segmentation_error")
-        return None
+        status = "unavailable" if isinstance(e, ImportError) else "failed"
+        return {"status": status, "reason": str(e), "frames_processed": 0, "objects": []}
     finally:
         if config.get("gpu_policy", {}).get("unload_after_job", True):
             try:
@@ -1024,9 +1414,12 @@ def _run_segmentation(path: Path, frames: list, config: dict, mode: str) -> Opti
                 pass
 
 
-def _run_grounding(query: str, frames: list, timeline: list, run_dir, config: dict) -> None:
+def _run_grounding(query: str, frames: list, timeline: list, run_dir, config: dict) -> dict:
     """Run LocateAnything grounding and merge results into the timeline."""
-    from providers.locate_anything import LocateAnythingProvider
+    try:
+        from providers.locate_anything import LocateAnythingProvider
+    except ImportError as exc:
+        return {"status": "unavailable", "reason": str(exc), "matches": 0}
     from models import TimelineEntry
 
     locate_config = config.get("models", {}).get("locate", {})
@@ -1038,7 +1431,7 @@ def _run_grounding(query: str, frames: list, timeline: list, run_dir, config: di
     try:
         if not provider.check_health():
             console.print("[yellow]LocateAnything endpoint not available — skipping grounding.[/yellow]")
-            return
+            return {"status": "unavailable", "reason": "endpoint is not reachable", "matches": 0}
 
         log_vram("before_grounding")
         ground_frames = [(f["timestamp"], f["image"]) for f in frames]
@@ -1059,7 +1452,10 @@ def _run_grounding(query: str, frames: list, timeline: list, run_dir, config: di
                 time_seconds=r["timestamp"],
                 timestamp=_fmt_time(r["timestamp"]),
                 observation=f"[GROUND] {query}: {', '.join(labels)} (confidence: {', '.join(scores)})",
-                frame_path=None,
+                frame_path=next((f.get("path") for f in frames
+                                 if abs(float(f["timestamp"]) - float(r["timestamp"])) < 0.1), None),
+                modality="grounding",
+                boxes=r["boxes"],
             )
             timeline.append(entry)
             grounding_timeline.append(entry)
@@ -1071,9 +1467,11 @@ def _run_grounding(query: str, frames: list, timeline: list, run_dir, config: di
             console.print(f"[dim]Grounding found {len(grounding_timeline)} frames with matches.[/dim]")
         else:
             console.print(f"[dim]No matches found for '{query}'.[/dim]")
+        return {"status": "completed", "matches": sum(len(r.get("boxes", [])) for r in raw_result.get("results", []))}
 
     except Exception as e:
         console.print(f"[yellow]Grounding failed: {e}[/yellow]")
+        return {"status": "failed", "reason": str(e), "matches": 0}
     finally:
         if config.get("gpu_policy", {}).get("unload_after_job", True):
             try:
@@ -1109,6 +1507,20 @@ def _display_observation(data: dict):
         console.print(f"\n[bold]Entities:[/bold] {', '.join(ents[:15])}")
         if len(ents) > 15:
             console.print(f"  [dim]... and {len(ents) - 15} more[/dim]")
+
+    if data.get("stages"):
+        stages = Table(title="Pipeline stages")
+        stages.add_column("Stage", style="cyan")
+        stages.add_column("Status", style="yellow")
+        stages.add_column("Details")
+        for name, info in data["stages"].items():
+            detail = info.get("reason") or (f"{info.get('frames')} frames" if info.get("frames") else "")
+            stages.add_row(name, str(info.get("status", "unknown")), detail)
+        console.print(stages)
+
+    segmentation = data.get("segmentation") or {}
+    if segmentation.get("objects"):
+        console.print(f"[dim]Segmentation: {len(segmentation['objects'])} mask(s) saved in {data.get('artifacts_dir', '')}[/dim]")
 
     if data.get("tokens"):
         tokens = data["tokens"]

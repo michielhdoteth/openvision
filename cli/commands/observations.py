@@ -89,7 +89,7 @@ def _list_observations(json_output: bool = False):
 def _view_observation(name: str):
     """View a specific observation file."""
     obs = _obs_dir()
-    obs_file = obs / f"{name}.md"
+    obs_file = _resolve_observation(obs, name)
     if not obs_file.exists():
         matches = list(obs.glob(f"*{name}*.md"))
         if not matches:
@@ -105,7 +105,7 @@ def _view_observation(name: str):
 def _delete_observation(name: str):
     """Delete an observation file."""
     obs = _obs_dir()
-    obs_file = obs / f"{name}.md"
+    obs_file = _resolve_observation(obs, name)
     if not obs_file.exists():
         matches = list(obs.glob(f"*{name}*.md"))
         if not matches:
@@ -115,3 +115,23 @@ def _delete_observation(name: str):
 
     obs_file.unlink()
     console.print(f"[green]Deleted:[/green] {obs_file.name}")
+
+
+def _resolve_observation(obs: Path, name: str) -> Path:
+    """Resolve an observation name without permitting path or glob traversal."""
+    if not name or Path(name).name != name or name in {".", ".."} or any(c in name for c in "*?[]"):
+        console.print("[red]Observation name must be a plain filename, without path or wildcard characters.[/red]")
+        raise typer.Exit(code=1)
+    candidate = (obs / f"{name}.md").resolve()
+    if candidate.parent != obs.resolve():
+        console.print("[red]Observation path is outside the observations directory.[/red]")
+        raise typer.Exit(code=1)
+    if candidate.exists():
+        return candidate
+    matches = list(obs.glob(f"*{name}*.md"))
+    if len(matches) == 1:
+        return matches[0].resolve()
+    if len(matches) > 1:
+        console.print(f"[red]Ambiguous observation name: {name}. Use the exact filename stem.[/red]")
+        raise typer.Exit(code=1)
+    return candidate

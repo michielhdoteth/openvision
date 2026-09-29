@@ -5,7 +5,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 from cli.app import app
 from models import SegmentResult, SegmentObject, TrackResult, TrackPosition
-from providers.sam import SamProvider
+from providers.sam import SamProvider, Sam3Provider, create_segmenter
 
 runner = CliRunner()
 
@@ -46,6 +46,19 @@ class TestTrackModels:
 
 
 class TestSamProvider:
+    def test_segment_masks_are_persisted_without_collisions(self, tmp_path, monkeypatch):
+        provider = SamProvider({"model": "mobile-sam", "load_on_demand": True})
+        image = np.zeros((8, 8, 3), dtype=np.uint8)
+        monkeypatch.setattr(provider, "segment", lambda *_: [
+            {"mask": np.zeros((8, 8), dtype=np.uint8), "bbox": [0, 0, 2, 2], "score": 0.9},
+            {"mask": np.ones((8, 8), dtype=np.uint8), "bbox": [2, 2, 4, 4], "score": 0.8},
+        ])
+        result = provider.segment_frames([(1.0, image)], "blue chart", tmp_path)
+        paths = [Path(item["mask_path"]) for item in result["objects"]]
+        assert len(paths) == 2
+        assert paths[0] != paths[1]
+        assert all(path.is_file() for path in paths)
+
     def test_init(self):
         config = {"model": "mobile-sam", "load_on_demand": True}
         provider = SamProvider(config)
@@ -63,10 +76,28 @@ class TestSamProvider:
             result = provider.segment(img, "object")
             # If it works, great. If not, should return empty list (not crash)
             assert isinstance(result, list)
-        except ImportError:
+        except (ImportError, RuntimeError):
             pass  # Expected if SAM deps not installed
         finally:
             provider.unload()
+
+
+    def test_configured_text_prompt_backend_is_sam3(self):
+        provider = create_segmenter({"provider": "sam3", "model": "sam3"})
+        assert isinstance(provider, Sam3Provider)
+
+    def test_sam3_segments_frames_and_persists_masks(self, tmp_path, monkeypatch):
+        provider = Sam3Provider({})
+        monkeypatch.setattr(provider, "segment", lambda *_: [
+            {"mask": np.ones((5, 6), dtype=np.uint8), "bbox": [1, 2, 4, 5], "score": 0.9},
+        ])
+        image = np.zeros((5, 6, 3), dtype=np.uint8)
+        result = provider.segment_frames([(3.0, image)], "person holding cup", tmp_path)
+        assert result["frames_processed"] == 1
+        assert result["objects"][0]["time_seconds"] == 3.0
+        mask = Path(result["objects"][0]["mask_path"])
+        assert mask.is_file()
+        assert mask.parent.name == "masks"
 
 
 class TestSegmentCli:

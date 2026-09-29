@@ -95,9 +95,19 @@ def runs_dir(config: Optional[dict] = None) -> Path:
     return _subpath(config, "runs", "runs")
 
 
+def run_cache_dir(config: Optional[dict] = None) -> Path:
+    """Resolve the configured RunCache directory used by all CLI commands."""
+    cache = (config or {}).get("cache") or {}
+    configured = Path(cache.get("directory") or "runs").expanduser()
+    if not configured.is_absolute():
+        configured = runs_dir(config)
+    configured.mkdir(parents=True, exist_ok=True)
+    return configured.resolve()
+
+
 def runs_db_path(config: Optional[dict] = None) -> Path:
-    """Path to the SQLite runs database (runs.db under runs dir)."""
-    return runs_dir(config) / "runs.db"
+    """Path to the SQLite runs database used by RunCache and video memory."""
+    return run_cache_dir(config) / "runs.db"
 
 
 def migrate_from_legacy() -> Optional[Path]:

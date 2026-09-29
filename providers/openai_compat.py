@@ -80,7 +80,7 @@ class OpenAICompatProvider(VlmProvider):
 
     def _error_response(self, exc: Exception, context: str = "provider") -> VlmResponse:
         """Create a VlmResponse from an exception."""
-        if isinstance(exc, httpx.ConnectError):
+        if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout)):
             return VlmResponse(
                 content=(
                     f"Could not connect to {context} at {self.base_url}: {exc}. "

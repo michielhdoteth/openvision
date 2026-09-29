@@ -374,25 +374,23 @@ def adaptive_sample(
         else:
             merged.append(r)
 
-    # Step 6: Extract frames for each range
-    # Use seek-based extraction for each range
-    frames = []
-    positions = set()  # Track positions to avoid duplicates
-
-    for start, end, range_fps in merged:
-        if range_fps <= 0:
-            continue
-        range_frames = extract_frames(
-            path, fps=range_fps, max_frames=max_frames,
-            max_resolution=max_resolution,
-        )
-
-        for f in range_frames:
-            if start <= f["timestamp"] <= end:
-                pos_key = round(f["timestamp"], 1)
-                if pos_key not in positions:
-                    positions.add(pos_key)
-                    frames.append(f)
+    # Reuse the single coarse decode. The prior implementation decoded the
+    # complete video once for every scene range. Prefer frames near scene cuts,
+    # then fill the remaining budget with evenly-spaced coverage.
+    scene_candidates = [
+        i for i, frame in enumerate(coarse_frames)
+        if any(abs(frame["timestamp"] - scene_time) <= dense_window / 2 for scene_time in scene_times)
+    ]
+    frames = [coarse_frames[i] for i in scene_candidates[:max_frames]]
+    if len(frames) < max_frames:
+        chosen = set(scene_candidates[:max_frames])
+        remaining = [i for i in range(len(coarse_frames)) if i not in chosen]
+        slots = max_frames - len(frames)
+        if remaining and slots:
+            step = len(remaining) / min(slots, len(remaining))
+            for n in range(min(slots, len(remaining))):
+                chosen.add(remaining[int(n * step)])
+        frames = [coarse_frames[i] for i in sorted(chosen)]
 
     # Step 7: Sort by timestamp and cap at max_frames
     frames.sort(key=lambda f: f["timestamp"])

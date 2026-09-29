@@ -103,13 +103,14 @@ class RunCache:
         return conn
 
     def cache_key(self, path: str, mode: str = "balanced", fps: float = 0.5,
-                  resolution: int = 768) -> str:
-        """Generate a cache key from video file properties + processing params."""
+                  resolution: int = 768, options: Optional[dict] = None) -> str:
+        """Generate a cache key from source identity and all result-changing options."""
         video_path = Path(path)
         if not video_path.exists():
             return ""
         stat = video_path.stat()
-        raw = f"{video_path.resolve()}:{stat.st_size}:{stat.st_mtime}:{mode}:{fps}:{resolution}"
+        option_json = json.dumps(options or {}, sort_keys=True, separators=(",", ":"), default=str)
+        raw = f"{video_path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:{mode}:{fps}:{resolution}:{option_json}"
         return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
     def has_cached(self, key: str) -> bool:

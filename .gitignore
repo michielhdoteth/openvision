@@ -27,6 +27,7 @@ env/
 runs/
 memory/
 openvision_test_output.json
+.firecrawl/
 
 # Model files (downloaded on first use)
 models/
@@ -62,3 +63,8 @@ verify_*.py
 
 # SAM 3 repo (cloned separately)
 sam3/
+
+# Local launch-video renders and working files
+brag-output*/
+.agents/skills/brag/
+skills-lock.json

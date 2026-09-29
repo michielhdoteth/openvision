@@ -1,6 +1,6 @@
 # openvision -- Video Perception CLI for AI Agents
 
-Open Vision gives AI agents eyes and ears. It extracts keyframes, transcribes audio, and builds structured timelines from video files. Everything runs locally -- no cloud, no telemetry, no API keys required.
+Open Vision gives AI agents local video/audio perception and time-grounded retrieval. Local inference requires no API keys; optional hosted providers or remote source URLs use the network only when selected.
 
 ## Quick Reference
 
@@ -19,6 +19,11 @@ Open Vision gives AI agents eyes and ears. It extracts keyframes, transcribes au
 | `openvision install list-models` | Show all models and install status |
 | `openvision observations list` | Saved observation ledgers |
 | `openvision observations view <id>` | View a saved observation |
+| `openvision memory sources` | List videos indexed in the shared local database |
+| `openvision memory status` | Show indexed source and evidence counts |
+| `openvision memory search "query"` | Search across all indexed videos |
+| `openvision memory outline --video <path>` | Inspect a video's time hierarchy |
+| `openvision memory ask <path> "question"` | Retrieve and VLM-check evidence for one video |
 
 ## Global Flags
 
@@ -29,13 +34,12 @@ Open Vision gives AI agents eyes and ears. It extracts keyframes, transcribes au
 | `--provider <name>` | VLM backend: `auto`, `lmstudio`, `ollama`, `llamacpp`, `openai`, `groq`, `together` |
 | `--stt-provider <name>` | STT backend: `parakeet` (default), `whisper` |
 | `--mode <mode>` | Processing mode: `fast`, `balanced`, `detailed` |
-| `--from <time>` | Start time (MM:SS, HH:MM:SS, or seconds) |
-| `--to <time>` | End time |
+| `--start <time>` | Start time (MM:SS, HH:MM:SS, or seconds) |
+| `--end <time>` | End time |
 | `--transcribe` / `-t` | Transcribe audio |
 | `--diarize` | Add speaker labels (requires pyannote.audio) |
 | `--raw-frames` | Skip VLM -- return frame paths for vision-capable agents |
 | `--grid` | Generate 3x3 contact sheet |
-| `--grid-size <n>` | Grid dimensions (default 3) |
 | `--text-anchors` | Force frames at subtitle-cue timestamps |
 | `--viewer` | Generate self-contained HTML viewer |
 | `--report` | Generate keep/drop visualization HTML |
@@ -44,6 +48,7 @@ Open Vision gives AI agents eyes and ears. It extracts keyframes, transcribes au
 | `--cookies-from-browser <name>` | Extract cookies from browser (chrome, firefox, etc.) |
 | `--dnn-model <path>` | ONNX model for inline DNN inference during extraction |
 | `--save-observations` | Save observation ledger to ~/.openvision/observations/ |
+| `--memory` | Increase long-video coverage; transcribe, diarize, and sample segmentation |
 
 ## Backend Selection
 
@@ -111,7 +116,7 @@ openvision transcribe video.mp4 --from 1:30 --to 2:00
 
 ```bash
 openvision observe video.mp4 --grid
-openvision observe video.mp4 --grid --grid-size 4
+openvision observe video.mp4 --grid
 ```
 
 ### HTML viewer
@@ -140,29 +145,22 @@ openvision observe "https://youtube.com/watch?v=..." --cookies-from-browser chro
 ### Cross-video search
 
 ```bash
-# After processing multiple videos, results cached automatically
+# Successful observe runs are automatically indexed in the local SQLite database.
 openvision observe video1.mp4 --json
 openvision observe video2.mp4 --json
+openvision memory sources
+openvision memory search "the red dial"
+openvision memory search "the red dial" --video video1.mp4
+openvision memory outline --video video1.mp4
+openvision memory ask video1.mp4 "What happens when the dial turns?"
 ```
+
+`--save-observations` writes a readable Markdown ledger; it is separate from the SQLite run and memory database. Use `observe --memory` for denser long-video coverage. Raw-frame mode is an agent handoff: transcript evidence may be indexed, but the frames are not searchable visually until a vision-capable agent analyzes them.
 
 ### Diagnose issues
 
 ```bash
 openvision status --doctor
-```
-
-## Python API
-
-```python
-from openvision import process, transcribe
-
-result = process("video.mp4", mode="balanced")
-print(result.summary)
-print(result.timeline)
-
-transcript = transcribe("video.mp4")
-for seg in transcript.segments:
-    print(f"[{seg.start:.1f}s] {seg.text}")
 ```
 
 ## Data Paths
@@ -172,7 +170,7 @@ for seg in transcript.segments:
 | Home | `~/.openvision` (`OPENVISION_HOME` env var) |
 | Observations | `~/.openvision/observations/videos` |
 | Downloads | `~/.openvision/downloads` |
-| Runs (SQLite) | `~/.openvision/runs/runs.db` |
+| Runs and video memory (SQLite) | `~/.openvision/runs/runs.db` (or configured cache directory) |
 
 ## Safety
 
@@ -181,5 +179,5 @@ for seg in transcript.segments:
 3. **YouTube cookies.** Some videos require authentication. Use `--cookies-from-browser chrome`.
 4. **`--jsonl` is streaming.** Events emit as they happen. Pipe to `jq` for pretty-printing.
 5. **`--raw-frames` skips the VLM.** Fastest mode for vision-capable agents.
-6. **Time windowing is inclusive.** `--from 1:30 --to 2:00` includes both endpoints.
+6. **Time windowing is explicit.** Use `observe --start 1:30 --end 2:00` to focus an interval.
 7. **SQLite cache auto-imports.** Legacy JSON runs migrate on first access.

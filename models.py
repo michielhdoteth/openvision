@@ -40,9 +40,14 @@ class ObserveResult(BaseModel):
     timeline: list[TimelineEntry]
     entities: list[str]
     artifacts_dir: str
+    source_path: Optional[str] = None
     confidence: Literal["low", "medium", "high"]
     tokens: Optional[TokenUsage] = None
     raw_frames: Optional[list[RawFrame]] = None
+    audio_segments: list[dict] = Field(default_factory=list)
+    segmentation: Optional[dict] = None
+    stages: dict[str, dict] = Field(default_factory=dict)
+    duration_seconds: float = 0.0
 
 
 class TranscribeResult(BaseModel):
@@ -104,6 +109,7 @@ class ProbeResult(BaseModel):
     vfr_mode: str = "unknown"
     color_range: str = "unknown"
     has_audio: bool = False
+    has_video: bool = True
     pixel_format: str = "unknown"
     bit_rate: int = 0
     # Deep analysis fields (populated with --deep flag)
@@ -150,6 +156,7 @@ class ImageResult(BaseModel):
     text_detected: list[str] = Field(default_factory=list)
     confidence: Literal["low", "medium", "high"]
     tokens: Optional[TokenUsage] = None
+    stages: dict[str, dict] = Field(default_factory=dict)
 
 
 class StatusResult(BaseModel):

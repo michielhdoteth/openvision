@@ -1,6 +1,7 @@
 """Speaker diarization provider - identifies who speaks when."""
 import logging
 import os
+import wave
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -25,27 +26,36 @@ class DiarizationResult:
 
 class DiarizerProvider:
     """
-    Speaker diarization using the `diarize` library (FoxNoseTech).
+    Local speaker diarization using pyannote.audio Community-1.
 
-    CPU-only, no HF token required. ~4.8% DER, 8x realtime on CPU.
-    Install: pip install diarize
+    The model is downloaded from Hugging Face on first use and requires the
+    account to have accepted the model conditions. ``token=True`` uses the
+    token configured by ``hf auth login``; HF_TOKEN can override it.
     """
+
+    MODEL_ID = "pyannote/speaker-diarization-community-1"
 
     def __init__(self, config: Optional[dict] = None):
         self.config = config or {}
-        self._lib = None
+        self._pipeline = None
 
-    def _ensure_lib(self):
-        """Lazy-load the diarize library."""
-        if self._lib is None:
+    def _ensure_pipeline(self):
+        """Load the local diarization pipeline and place it on the best device."""
+        if self._pipeline is None:
             try:
-                from diarize import diarize as diarize_fn
-                self._lib = diarize_fn
+                import torch
+                from pyannote.audio import Pipeline
             except ImportError:
                 raise ImportError(
-                    "Speaker diarization requires the 'diarize' package.\n"
-                    "Install it with: pip install diarize"
-                )
+                    "Speaker diarization requires pyannote.audio. Install with: uv sync --extra diarize"
+                ) from None
+
+            token = self.config.get("hf_token") or os.getenv("HF_TOKEN") or True
+            self._pipeline = Pipeline.from_pretrained(self.MODEL_ID, token=token)
+            device = self.config.get("device")
+            if not device:
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            self._pipeline.to(torch.device(device))
 
     def diarize(self, audio_path: str,
                 min_speakers: Optional[int] = None,
@@ -61,10 +71,12 @@ class DiarizerProvider:
         Returns:
             DiarizationResult with speaker segments
         """
-        self._ensure_lib()
+        self._ensure_pipeline()
 
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"Audio file not found: {audio_path}")
+
+        audio = self._read_waveform(audio_path)
 
         kwargs = {}
         if min_speakers is not None:
@@ -72,13 +84,12 @@ class DiarizerProvider:
         if max_speakers is not None:
             kwargs["max_speakers"] = max_speakers
 
-        logger.info(f"Running diarization on {audio_path}")
-        result = self._lib(audio_path, **kwargs)
-
-        # Convert to our dataclass
+        logger.info(f"Running pyannote Community-1 diarization on {audio_path}")
+        result = self._pipeline(audio, **kwargs)
+        annotation = getattr(result, "speaker_diarization", result)
         segments = [
-            SpeakerSegment(start=s.start, end=s.end, speaker=s.speaker)
-            for s in result.segments
+            SpeakerSegment(start=turn.start, end=turn.end, speaker=str(speaker))
+            for turn, _track, speaker in annotation.itertracks(yield_label=True)
         ]
 
         speakers = list(set(s.speaker for s in segments))
@@ -86,12 +97,55 @@ class DiarizerProvider:
 
         diar_result = DiarizationResult(
             segments=segments,
-            num_speakers=result.num_speakers,
+            num_speakers=len(speakers),
             speakers=speakers,
         )
 
         logger.info(f"Diarization complete: {len(segments)} segments, {len(speakers)} speakers")
         return diar_result
+
+    @staticmethod
+    def _read_waveform(audio_path: str) -> dict:
+        """Decode OpenVision's PCM WAV into pyannote's in-memory audio contract.
+
+        Passing waveform data directly avoids TorchCodec's native FFmpeg DLL
+        loader, which is not reliable for the standard FFmpeg Windows builds.
+        """
+        import numpy as np
+        import torch
+
+        with wave.open(audio_path, "rb") as stream:
+            channels = stream.getnchannels()
+            sample_rate = stream.getframerate()
+            sample_width = stream.getsampwidth()
+            frames = stream.readframes(stream.getnframes())
+
+        if sample_width == 1:
+            samples = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128) / 128
+        elif sample_width == 2:
+            samples = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768
+        elif sample_width == 4:
+            samples = np.frombuffer(frames, dtype="<i4").astype(np.float32) / 2147483648
+        else:
+            raise ValueError(f"Unsupported WAV sample width: {sample_width * 8} bits")
+
+        samples = samples.reshape(-1, channels)
+        if channels > 1:
+            samples = samples.mean(axis=1, keepdims=True)
+        waveform = torch.from_numpy(samples.T.copy())
+        return {"waveform": waveform, "sample_rate": sample_rate}
+
+    def close(self):
+        """Release model references and return cached CUDA allocations."""
+        self._pipeline = None
+        try:
+            import torch
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
 
 
 def merge_transcript_with_diarization(

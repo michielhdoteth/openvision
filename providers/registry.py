@@ -86,6 +86,11 @@ class ProviderRegistry:
             # Merge detected config
             config = {**detected[0].get("config", {}), **config}
             config["provider"] = provider_name
+        elif config.get("model", "auto") == "auto":
+            # Resolve the model sentinel even when the caller chose a provider.
+            matching = next((item for item in cls.detect() if item.get("name") == provider_name), None)
+            if matching and matching.get("models"):
+                config = {**matching.get("config", {}), **config, "model": matching["models"][0]}
 
         providers = _get_providers()
 

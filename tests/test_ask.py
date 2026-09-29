@@ -51,3 +51,8 @@ class TestAskCli:
 
         result = runner.invoke(app, ["ask", str(videos[0]), "Is there a person?"])
         assert result.exit_code in (0, 1)  # Either works or fails cleanly
+def test_uncertain_includes_provider_failures():
+    from cli.commands.ask import _is_uncertain
+
+    assert _is_uncertain("Request to lmstudio timed out after 2s.")
+    assert _is_uncertain("Could not connect to lmstudio")

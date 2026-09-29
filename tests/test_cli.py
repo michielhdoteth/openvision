@@ -58,6 +58,23 @@ class TestCliSmoke:
         data = json.loads(result.output)
         assert "duration_seconds" in data
         assert "width" in data
+
+    def test_probe_jsonl_is_only_machine_events(self, tmp_path, monkeypatch):
+        import json
+        from cli.commands import probe as probe_command
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"stub")
+        monkeypatch.setattr(probe_command, "probe", lambda _: {
+            "duration_seconds": 3.0, "width": 10, "height": 10, "fps": 1.0,
+            "codec": "test", "frame_count": 3, "vfr_mode": "cfr",
+            "color_range": "unknown", "has_audio": True, "pixel_format": "yuv420p",
+            "bit_rate": 100,
+        })
+        result = runner.invoke(app, ["probe", str(video), "--jsonl"])
+        assert result.exit_code == 0
+        events = [json.loads(line) for line in result.stdout.splitlines()]
+        assert [event["event"] for event in events] == ["probe", "done"]
+        assert result.stderr == ""
     
     def test_status_stub(self):
         result = runner.invoke(app, ["status"])
@@ -91,3 +108,23 @@ class TestCliSmoke:
     def test_observations_delete_no_name(self):
         result = runner.invoke(app, ["observations", "delete"])
         assert result.exit_code != 0
+
+    def test_observations_reject_traversal(self, tmp_path, monkeypatch):
+        from cli.commands import observations
+        outside = tmp_path / "outside.md"
+        outside.write_text("keep", encoding="utf-8")
+        monkeypatch.setattr(observations, "_obs_dir", lambda: tmp_path / "notes")
+        result = runner.invoke(app, ["observations", "delete", "--name", "..\\outside"])
+        assert result.exit_code != 0
+        assert outside.read_text(encoding="utf-8") == "keep"
+
+    def test_observations_reject_ambiguous_fuzzy_match(self, tmp_path, monkeypatch):
+        from cli.commands import observations
+        obs = tmp_path / "notes"
+        obs.mkdir()
+        (obs / "one-report.md").write_text("one", encoding="utf-8")
+        (obs / "two-report.md").write_text("two", encoding="utf-8")
+        monkeypatch.setattr(observations, "_obs_dir", lambda: obs)
+        result = runner.invoke(app, ["observations", "delete", "--name", "report"])
+        assert result.exit_code != 0
+        assert len(list(obs.glob("*.md"))) == 2

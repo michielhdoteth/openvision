@@ -67,3 +67,12 @@ class TestGetGpuName:
         name = get_gpu_name()
         assert isinstance(name, str)
         assert len(name) > 0
+
+    def test_nvml_name_supports_string_return(self, monkeypatch):
+        import core.gpu as gpu
+
+        monkeypatch.setattr(gpu, "_init_pynvml", lambda: True)
+        monkeypatch.setattr(gpu.pynvml, "nvmlDeviceGetHandleByIndex", lambda _: object())
+        monkeypatch.setattr(gpu.pynvml, "nvmlDeviceGetName", lambda _: "NVIDIA test GPU")
+
+        assert gpu.get_gpu_name() == "NVIDIA test GPU"

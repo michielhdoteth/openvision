@@ -22,6 +22,8 @@ def status_cmd(
     doctor: bool = typer.Option(False, "--doctor", help="Run full diagnostic checks"),
 ):
     """Show openvision system status, GPU state, cache info. Use --doctor for diagnostics."""
+    global console
+    console = Console(stderr=json_output)
     try:
         config = load_config()
     except FileNotFoundError:
@@ -33,17 +35,13 @@ def status_cmd(
     safety = check_safe_mode(config)
 
     # Paths + cache (stable under openvision_HOME)
-    from storage.paths import get_home, observations_dir, downloads_dir, runs_dir
+    from storage.paths import get_home, observations_dir, downloads_dir, run_cache_dir
 
     home = get_home(config)
     obs = observations_dir(config)
     dls = downloads_dir(config)
-    runs_path = runs_dir(config)
-
-    cache_dir = config.get("cache", {}).get("directory", "runs")
-    if not Path(cache_dir).is_absolute():
-        cache_dir = str(runs_path)
-    run_cache = RunCache(cache_dir)
+    runs_path = run_cache_dir(config)
+    run_cache = RunCache(str(runs_path))
     runs = run_cache.list_runs()
 
     result = StatusResult(
@@ -71,7 +69,7 @@ def status_cmd(
         payload["models"] = _get_model_status_list()
         if doctor:
             payload["diagnostics"] = _run_diagnostics(config)
-        console.print(json.dumps(payload, indent=2))
+        typer.echo(json.dumps(payload, indent=2))
     else:
         _display_status(result, runs, safety)
         _display_provider_health()
@@ -293,7 +291,8 @@ def _check_gpu_compute() -> dict:
 
 def _check_parakeet_model(config: dict) -> dict:
     """Check if Parakeet model files exist."""
-    models_dir = Path(config.get("paths", {}).get("models_dir", "models"))
+    paths = config.get("paths") or {}
+    models_dir = Path(paths.get("models_dir") or "models")
     if not models_dir.is_absolute():
         from storage.paths import get_home
         home = get_home(config)
@@ -387,7 +386,7 @@ def _display_diagnostics(config: dict):
 
         for item in items:
             name = item.get("name", "?")
-            installed = item.get("installed", False)
+            installed = item.get("installed", item.get("ok", False))
             version = item.get("version", "")
             path_val = item.get("path", "")
             missing = item.get("missing_files", [])
@@ -407,7 +406,7 @@ def _display_diagnostics(config: dict):
 
     # Summary
     total = len(checks)
-    passed = sum(1 for c in checks if c.get("installed", False))
+    passed = sum(1 for c in checks if c.get("installed", c.get("ok", False)))
     if passed == total:
         console.print(f"\n[green bold]All {total} checks passed.[/green bold]")
     else:

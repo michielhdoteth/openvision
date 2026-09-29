@@ -31,12 +31,15 @@ def ask_cmd(
     question: str = typer.Argument(..., help="Question to answer about the video"),
     mode: str = typer.Option("balanced", "--mode", "-m", help="Search mode: keyframes, scene_changes, dense"),
     max_tokens: int = typer.Option(None, "--max-tokens", help="Override max tokens for VLM response"),
+    max_frames: int = typer.Option(None, "--max-frames", min=1, max=300, help="Maximum frames to inspect (overrides the mode budget)"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
     jsonl: bool = typer.Option(False, "--jsonl", help="Streaming JSONL output"),
     provider_name: str = typer.Option(None, "--provider", help="VLM provider: auto, lmstudio, ollama, llamacpp, openai, groq, together, vllm, localai"),
     raw_frames: bool = typer.Option(False, "--raw-frames", help="Skip VLM — return raw frame paths for vision-capable agents"),
 ):
     """Ask a targeted question about video content."""
+    global console
+    console = Console(stderr=json_output or jsonl)
     from core.stream import create_jsonl_writer
     writer = create_jsonl_writer(jsonl)
     if writer:
@@ -56,7 +59,7 @@ def ask_cmd(
     mode_config = get_mode_config(config, mode)
 
     fps = mode_config.get("fps", 0.5)
-    max_frames = mode_config.get("max_frames", 60)
+    max_frames = max_frames or mode_config.get("max_frames", 60)
     resolution = mode_config.get("resolution", 768)
 
     # Determine search mode
@@ -105,10 +108,15 @@ def ask_cmd(
         }
 
         if json_output:
-            console.print(json.dumps(result, indent=2))
-        else:
+            typer.echo(json.dumps(result, indent=2))
+        elif not jsonl:
             console.print(f"[green]Extracted {len(raw)} raw frames to {tmp_dir}[/green]")
             console.print("[dim]Ready for vision-capable agent processing.[/dim]")
+        if writer:
+            for frame in raw:
+                writer.emit_frame(frame.index, frame.timestamp, frame.path)
+            writer.emit_done({"raw_frames": len(raw), "frame_dir": str(tmp_dir)})
+            writer.flush()
         return
 
     # Query VLM
@@ -189,8 +197,8 @@ def ask_cmd(
         writer.flush()
 
     if json_output:
-        console.print(json.dumps(result.model_dump(), indent=2))
-    else:
+        typer.echo(json.dumps(result.model_dump(), indent=2))
+    elif not jsonl:
         _display_ask_result(result, question)
 
 
@@ -201,6 +209,8 @@ def _is_uncertain(answer: str) -> bool:
         "not visible", "cannot determine", "not clear",
         "i don't know", "there is no", "does not appear",
         "insufficient", "unclear", "not enough",
+        "could not connect", "timed out after", "returned http ",
+        "unexpected error contacting",
     ]
     lower = answer.lower()
     return any(phrase in lower for phrase in uncertain_phrases)

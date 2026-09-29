@@ -4,6 +4,20 @@ from core.sampling import adaptive_sample
 
 
 class TestAdaptiveSample:
+    def test_decodes_video_only_once(self, monkeypatch):
+        import core.video
+        calls = []
+        frames = [{"timestamp": float(i), "image": None} for i in range(10)]
+        monkeypatch.setattr(core.video, "probe", lambda path: {"duration_seconds": 10, "fps": 1})
+        def extract(*args, **kwargs):
+            calls.append(1)
+            return frames
+        monkeypatch.setattr(core.video, "extract_frames", extract)
+        monkeypatch.setattr("core.sampling.detect_scenes", lambda *a, **k: [3, 6])
+        result = adaptive_sample("fake.mp4", max_frames=10)
+        assert len(calls) == 1
+        assert len(result) == 10
+
     def test_with_real_video(self):
         """Test with our real video file."""
         from pathlib import Path
