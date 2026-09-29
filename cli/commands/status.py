@@ -11,7 +11,7 @@ import json
 from core.gpu import get_vram_info, get_gpu_name, check_safe_mode
 from storage.cache import RunCache
 from storage.config import load_config
-from models import StatusResult
+from openvision.models import StatusResult
 from providers.registry import ProviderRegistry
 
 console = Console()

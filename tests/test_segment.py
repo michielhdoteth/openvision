@@ -4,7 +4,7 @@ import numpy as np
 from pathlib import Path
 from typer.testing import CliRunner
 from cli.app import app
-from models import SegmentResult, SegmentObject, TrackResult, TrackPosition
+from openvision.models import SegmentResult, SegmentObject, TrackResult, TrackPosition
 from providers.sam import SamProvider, Sam3Provider, create_segmenter
 
 runner = CliRunner()

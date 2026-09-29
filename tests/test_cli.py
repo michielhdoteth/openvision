@@ -74,6 +74,30 @@ class TestCliSmoke:
         assert result.exit_code == 0
         events = [json.loads(line) for line in result.stdout.splitlines()]
         assert [event["event"] for event in events] == ["probe", "done"]
+        assert events[0]["data"]["duration_seconds"] == 3.0
+        assert events[0]["data"]["width"] == 10
+        assert events[1]["data"] == {"type": "probe"}
+        assert result.stderr == ""
+
+    def test_probe_json_is_machine_readable_for_agent_callers(self, tmp_path, monkeypatch):
+        import json
+        from cli.commands import probe as probe_command
+
+        video = tmp_path / "clip.mp4"
+        video.write_bytes(b"stub")
+        monkeypatch.setattr(probe_command, "probe", lambda _: {
+            "duration_seconds": 3.0, "width": 10, "height": 10, "fps": 1.0,
+            "codec": "test", "frame_count": 3, "vfr_mode": "cfr",
+            "color_range": "unknown", "has_audio": True, "pixel_format": "yuv420p",
+            "bit_rate": 100,
+        })
+
+        result = runner.invoke(app, ["probe", str(video), "--json"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert payload["duration_seconds"] == 3.0
+        assert payload["width"] == 10
         assert result.stderr == ""
     
     def test_status_stub(self):

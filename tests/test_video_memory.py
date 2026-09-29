@@ -120,7 +120,7 @@ def test_memory_uses_the_same_absolute_cache_directory_as_observe(tmp_path, monk
 
 def test_observe_indexing_persists_searchable_transcript_and_visual(tmp_path):
     from cli.commands.observe import _index_video_memory
-    from models import ObserveResult, TimelineEntry
+    from openvision.models import ObserveResult, TimelineEntry
     video = tmp_path / "source.mp4"
     video.write_bytes(b"media")
     cache = RunCache(str(tmp_path / "runs"))

@@ -13,7 +13,7 @@ from core.gpu import auto_downgrade_mode, log_vram
 from providers.sam import SamProvider
 from storage.cache import RunCache
 from storage.config import load_config, get_mode_config
-from models import TrackResult, TrackPosition
+from openvision.models import TrackResult, TrackPosition
 
 console = Console()
 

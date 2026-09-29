@@ -2,7 +2,7 @@
 import pytest
 from typer.testing import CliRunner
 from cli.app import app
-from models import AskResult
+from openvision.models import AskResult
 from cli.commands.ask import _is_uncertain
 
 runner = CliRunner()

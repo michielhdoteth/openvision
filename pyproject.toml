@@ -61,11 +61,8 @@ explicit = true
 openvision = "cli.app:app"
 ov = "cli.app:app"
 
-[tool.setuptools]
-py-modules = ["models"]
-
 [tool.setuptools.packages.find]
-include = ["cli*", "core*", "providers*", "storage*"]
+include = ["openvision*", "cli*", "core*", "providers*", "storage*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

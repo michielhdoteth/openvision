@@ -74,7 +74,7 @@ def process(
     from core.sampling import smart_sample, adaptive_sample
     from providers.registry import ProviderRegistry
     from storage.config import load_config, get_mode_config
-    from models import ObserveResult, TimelineEntry
+    from openvision.models import ObserveResult, TimelineEntry
 
     input_path = Path(path)
     if not input_path.exists():

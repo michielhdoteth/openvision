@@ -4,7 +4,7 @@ import numpy as np
 from pathlib import Path
 from typer.testing import CliRunner
 from cli.app import app
-from models import ObserveResult, ImageResult, TimelineEntry
+from openvision.models import ObserveResult, ImageResult, TimelineEntry
 
 runner = CliRunner()
 
@@ -153,14 +153,14 @@ class TestBuildSummary:
 
     def test_timeline_summary_single(self):
         tl_fn, _ = self._import_helpers()
-        from models import TimelineEntry
+        from openvision.models import TimelineEntry
         timeline = [TimelineEntry(time_seconds=0.0, timestamp="00:00", observation="A single event")]
         result = tl_fn(timeline)
         assert result.content == "A single event"
 
     def test_timeline_summary_multiple(self):
         tl_fn, _ = self._import_helpers()
-        from models import TimelineEntry
+        from openvision.models import TimelineEntry
         timeline = [
             TimelineEntry(time_seconds=0.0, timestamp="00:00", observation="First event"),
             TimelineEntry(time_seconds=5.0, timestamp="00:05", observation="Second event"),
@@ -177,7 +177,7 @@ class TestBuildSummary:
 
     def test_qa_summary_with_answers(self):
         _, qa_fn = self._import_helpers()
-        from models import TimelineEntry
+        from openvision.models import TimelineEntry
         timeline = [
             TimelineEntry(time_seconds=0.0, timestamp="00:00", observation="Short"),
             TimelineEntry(time_seconds=5.0, timestamp="00:05", observation="A much longer detailed observation about the scene"),

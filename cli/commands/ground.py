@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 
-from models import GroundingBox, GroundingFrame, GroundingResult, TokenUsage
+from openvision.models import GroundingBox, GroundingFrame, GroundingResult, TokenUsage
 from storage.config import load_config, get_mode_config
 from core.gpu import auto_downgrade_mode, log_vram
 

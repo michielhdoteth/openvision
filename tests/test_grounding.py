@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 from pathlib import Path
 
 from providers.locate_anything import LocateAnythingProvider
-from models import GroundingBox, GroundingFrame, GroundingResult, TokenUsage
+from openvision.models import GroundingBox, GroundingFrame, GroundingResult, TokenUsage
 
 
 class TestLocateAnythingProvider:

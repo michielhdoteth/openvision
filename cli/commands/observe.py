@@ -23,7 +23,7 @@ from providers.parakeet import Transcript
 from providers.base import VlmResponse, TokenUsage
 from storage.cache import RunCache
 from storage.config import load_config, get_mode_config
-from models import (
+from openvision.models import (
     ObserveResult, ImageResult, TimelineEntry, ProbeResult,
 )
 
@@ -504,7 +504,7 @@ def _handle_audio_only(path: Path, metadata: dict, cache: RunCache, key: str,
                        device: str, subtitles_file: Optional[str], json_output: bool,
                        jsonl: bool, writer, memory_build: bool) -> None:
     """Run the compatible audio stages when a source has no video stream."""
-    from models import ObserveResult, TimelineEntry
+    from openvision.models import ObserveResult, TimelineEntry
     run_dir = cache.create_run(key, metadata)
     transcript = None
     stages = {"visual": {"status": "skipped", "reason": "input contains no video stream"},
@@ -982,7 +982,7 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
     # --- raw-frames mode: skip VLM, return frames + audio timeline ---
     transcript = None
     if raw_frames:
-        from models import RawFrame, TimelineEntry
+        from openvision.models import RawFrame, TimelineEntry
         if transcribe_audio and subtitles_file and Path(subtitles_file).is_file():
             try:
                 transcript = _transcript_from_captions(subtitles_file)
@@ -1050,7 +1050,7 @@ def _handle_video(path: Path, question: Optional[str], custom_prompt: Optional[s
             console.print("[dim]Ready for vision-capable agent processing.[/dim]")
         return
 
-    from models import TimelineEntry
+    from openvision.models import TimelineEntry
 
     # Query VLM
     vlm_config = config.get("models", {}).get("vlm", {})
@@ -1420,7 +1420,7 @@ def _run_grounding(query: str, frames: list, timeline: list, run_dir, config: di
         from providers.locate_anything import LocateAnythingProvider
     except ImportError as exc:
         return {"status": "unavailable", "reason": str(exc), "matches": 0}
-    from models import TimelineEntry
+    from openvision.models import TimelineEntry
 
     locate_config = config.get("models", {}).get("locate", {})
 

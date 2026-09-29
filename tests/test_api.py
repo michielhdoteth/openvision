@@ -1,4 +1,4 @@
-"""Tests for api.py - Python API wrapper."""
+"""Tests for Open Vision's installable Python API."""
 import pytest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
@@ -6,8 +6,18 @@ import tempfile
 
 
 class TestProcessResult:
+    def test_public_package_exports_python_api(self):
+        import openvision
+        from openvision.api import process, transcribe
+        from openvision.models import ObserveResult
+
+        assert openvision.process is process
+        assert openvision.transcribe is transcribe
+        assert openvision.ProcessResult.__name__ == "ProcessResult"
+        assert ObserveResult.__module__ == "openvision.models"
+
     def test_model_fields(self):
-        from api import ProcessResult
+        from openvision import ProcessResult
         r = ProcessResult(
             summary="test",
             timeline=[],
@@ -18,7 +28,7 @@ class TestProcessResult:
         assert r.timeline == []
 
     def test_default_values(self):
-        from api import ProcessResult
+        from openvision import ProcessResult
         r = ProcessResult()
         assert r.summary == ""
         assert r.timeline == []
@@ -36,7 +46,7 @@ class TestProcess:
     @patch("core.video.probe")
     def test_process_returns_result(self, mock_probe, mock_auto_fps, mock_vfr,
                                      mock_sample, mock_registry, tmp_path):
-        from api import process, ProcessResult
+        from openvision import process, ProcessResult
 
         video = tmp_path / "test.mp4"
         video.write_bytes(b"fake video")
@@ -51,7 +61,7 @@ class TestProcess:
         assert isinstance(result, ProcessResult)
 
     def test_process_file_not_found(self):
-        from api import process
+        from openvision import process
         with pytest.raises(FileNotFoundError):
             process("/nonexistent/video.mp4")
 
@@ -59,7 +69,7 @@ class TestProcess:
 class TestTranscribe:
     @patch("providers.get_provider")
     def test_transcribe_returns_result(self, mock_get_provider):
-        from api import transcribe
+        from openvision import transcribe
         from providers.parakeet import Transcript, TranscriptSegment
 
         mock_provider = MagicMock()
@@ -79,6 +89,6 @@ class TestTranscribe:
         assert result.segments[0].text == "hello"
 
     def test_transcribe_file_not_found(self):
-        from api import transcribe
+        from openvision import transcribe
         with pytest.raises(FileNotFoundError):
             transcribe("/nonexistent/video.mp4")

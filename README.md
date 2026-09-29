@@ -1,6 +1,6 @@
 # Open Vision
 
-![Open Vision — local vision for AI agents](banner.png)
+![Open Vision - local vision for AI agents](.github/banner.png)
 
 **Agents are blind by default. Open Vision gives them eyes and ears.**
 
@@ -16,7 +16,7 @@ openvision transcribe video.mp4
 
 AI agents can read code, but they can't watch a video, read a screen recording, or hear a meeting. Open Vision fixes that. It extracts keyframes, transcribes audio, and builds a structured timeline that agents can actually reason about.
 
-Works from an agent tool call, a shell script, or any framework that can run a CLI.
+Works with any agent that can run a command-line tool and consume JSON or JSONL. No framework-specific SDK or integration is required.
 
 ## Install
 
@@ -147,12 +147,14 @@ Raw-frame mode is an agent handoff: its transcript can be indexed, but its image
 | Streaming JSONL | `observe video.mp4 --jsonl` |
 ## Agent integration
 
-The CLI is the stable agent interface. Prefer JSON for one-shot tool calls and JSONL when consuming incremental events:
+The CLI is the stable, framework-independent agent interface. Any agent that can invoke a command and read standard output can integrate through JSON for one-shot calls or JSONL for incremental events:
 
 ```bash
 openvision observe video.mp4 --json
 openvision memory search "the presenter changes the setting" --json
 ```
+
+The automated tests exercise both machine-output protocols and check that JSONL output contains only parseable events. This validates the integration contract without tying Open Vision to a particular agent framework.
 
 ## Backends
 
@@ -191,7 +193,7 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-Architecture: `cli/` (Typer commands) -> `core/` (video, audio, sampling, streaming) -> `providers/` (VLM + STT backends) -> `storage/` (SQLite cache, paths). See `AGENT_GUIDE.md` for the full agent integration guide.
+Architecture: `openvision/` (public Python API and schemas), `cli/` (Typer commands), `core/` (video, audio, sampling, streaming), `providers/` (VLM and STT backends), and `storage/` (SQLite cache and paths). See `AGENT_GUIDE.md` for the full agent integration guide.
 
 ## License
 

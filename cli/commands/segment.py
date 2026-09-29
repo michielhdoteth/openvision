@@ -13,7 +13,7 @@ from core.gpu import auto_downgrade_mode, log_vram
 from providers.sam import create_segmenter
 from storage.cache import RunCache
 from storage.config import load_config, get_mode_config
-from models import SegmentResult, SegmentObject
+from openvision.models import SegmentResult, SegmentObject
 
 console = Console()
 

@@ -11,7 +11,7 @@ from core.sampling import smart_sample, find_keyframes_for_question
 from providers.registry import ProviderRegistry
 from providers.base import TokenUsage
 from storage.config import load_config, get_mode_config
-from models import AskResult
+from openvision.models import AskResult
 
 console = Console()
 
@@ -90,7 +90,7 @@ def ask_cmd(
     if raw_frames:
         import tempfile
         from core.image import save_frame
-        from models import RawFrame
+        from openvision.models import RawFrame
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="openvision_raw_"))
         raw = []
