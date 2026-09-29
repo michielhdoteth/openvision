@@ -2,9 +2,13 @@
 
 ![Open Vision - local vision for AI agents](.github/banner.png)
 
-**Agents are blind by default. Open Vision gives them eyes and ears.**
+**Give shell-capable AI agents eyes, ears, and time-grounded video memory.**
 
-A local-first CLI that lets AI agents inspect video, understand speech, and retrieve time-stamped evidence. Local providers need no API key or cloud account; optional hosted providers are available when configured. Open Vision sends nothing anywhere unless you choose a remote provider or source URL.
+Open Vision is an agent perception layer for video. Give it a local video or URL, and it returns visual and audio evidence as JSON, JSONL, and files your agent can use. A vision-capable agent can inspect handed-off frames itself; otherwise, Open Vision can analyze them with a configured vision model.
+
+The flow is simple: **video or URL → Open Vision → visual and audio evidence → JSON, JSONL, and files → agent.** The CLI works with any agent that can run a command and consume its output. No framework-specific SDK is required.
+
+Open Vision is local-first. Local video, local models, and the local SQLite index stay on your machine. Nothing is uploaded unless you use a remote source such as a video URL or configure a hosted model provider. Local providers need no API key or cloud account.
 
 ```
 openvision observe video.mp4
@@ -12,11 +16,43 @@ openvision ask video.mp4 "what color is the car?"
 openvision transcribe video.mp4
 ```
 
-## Why?
+## For Agents
 
-AI agents can read code, but they can't watch a video, read a screen recording, or hear a meeting. Open Vision fixes that. It extracts keyframes, transcribes audio, and builds a structured timeline that agents can actually reason about.
+Choose the handoff that matches your agent. Vision-capable agents can inspect the original frame images; text-only agents can use observations from a configured local or hosted VLM.
 
-Works with any agent that can run a command-line tool and consume JSON or JSONL. No framework-specific SDK or integration is required.
+### Vision-capable agents
+
+```bash
+openvision observe video.mp4 --raw-frames --transcribe --json
+```
+
+This skips local VLM analysis and returns frame paths with the audio timeline, so your agent can do the visual reasoning. Use `--jsonl` for incremental events in streaming pipelines:
+
+```bash
+openvision observe video.mp4 --raw-frames --transcribe --jsonl
+```
+
+### Text-only agents
+
+```bash
+openvision observe video.mp4 --json
+```
+
+Open Vision analyzes the sampled frames with a configured vision model and returns structured observations and time-grounded evidence. Machine-readable output can be saved, passed to another tool, or consumed directly by the agent.
+
+### Video memory for agents
+
+Open Vision can turn separate observations into a persistent, searchable timeline. Successful `observe` runs index available evidence in a local SQLite database. Agents can search across videos, inspect a video's time hierarchy, or ask a question about one source and have retrieved intervals checked against stored evidence frames.
+
+This gives agents a way to return to specific moments across long recordings and multiple videos, instead of relying on a single summary or reprocessing the source from scratch. Speech, visual notes, speakers, and frame or mask references remain distinct and time-grounded. Speaker labels are associated with nearby visual events by time; they do not identify a visible person.
+
+```bash
+openvision memory sources
+openvision memory search "when does the speaker demonstrate the setup?"
+openvision memory ask lecture.mp4 "What happens during the setup demonstration?"
+```
+
+The index uses SQLite full-text search, not embeddings. `memory ask` uses the configured VLM to verify retrieved intervals against stored evidence frames.
 
 ## Install
 
@@ -56,53 +92,25 @@ openvision observe "https://youtube.com/watch?v=..."
 
 ## What It Does
 
-**Observe** -- Extracts keyframes from video, analyzes each with a vision model, and builds a cross-modal timeline (visual + audio). Returns a structured summary.
+**Observe:** Extracts keyframes from video, analyzes each with a vision model, and builds a cross-modal timeline (visual + audio). Returns a structured summary.
 
 Use `observe --read-text` to ask the VLM to quote clearly legible text in sampled frames. This is VLM-based reading, not a separate OCR engine; uncertain or obscured text should remain marked as uncertain.
 
-**Ask** -- Targeted question about video content. "What color is the car?" returns a direct answer with evidence frames.
+**Ask:** Targeted question about video content. "What color is the car?" returns a direct answer with evidence frames.
 
-**Transcribe** -- Speech-to-text using Parakeet (default, fast, runs on CPU) or Whisper. Supports speaker diarization.
+**Transcribe:** Speech-to-text using Parakeet (default, fast, runs on CPU) or Whisper. Supports speaker diarization.
 
-**Segment** -- Text-prompt object segmentation. "person" returns masked regions with bounding boxes.
+**Segment:** Text-prompt object segmentation. "person" returns masked regions with bounding boxes.
 
-**Video memory** -- Successful video `observe` runs automatically index their available evidence into the local SQLite database and report the indexing result in `stages.memory`. `--memory` requests denser long-video coverage (about one visual sample per 30 seconds, capped at 300 frames), transcription/diarization, and sampled segmentation. The database keeps a whole-video root, five-minute sections, and thirty-second evidence windows; speech, visual notes, speakers, and frame/mask references remain distinct and time-grounded.
+**Video memory:** Successful video `observe` runs automatically index their available evidence into the local SQLite database and report the indexing result in `stages.memory`. `--memory` requests denser long-video coverage (about one visual sample per 30 seconds, capped at 300 frames), transcription/diarization, and sampled segmentation. The database keeps a whole-video root, five-minute sections, and thirty-second evidence windows.
 
-**Track** -- Frame-by-frame object tracking across a video.
+**Track:** Frame-by-frame object tracking across a video.
 
-**Probe** -- Video metadata: duration, resolution, FPS, codec, estimated processing cost.
-
-## For Agents
-
-### Vision-capable agents (recommended)
-
-If your agent can read images:
-
-```bash
-openvision observe video.mp4 --raw-frames --transcribe --json
-```
-
-This skips the local VLM and returns frame paths + audio timeline. Your agent does the visual reasoning.
-
-### Text-only agents
-
-```bash
-openvision observe video.mp4 --json
-```
-
-Open Vision runs a local VLM (LM Studio, Ollama, llama.cpp) and returns structured observations.
-
-### Streaming pipelines
-
-```bash
-openvision observe video.mp4 --jsonl --transcribe
-```
-
-One JSON event per line. Agents and pipelines can consume results incrementally.
+**Probe:** Video metadata: duration, resolution, FPS, codec, estimated processing cost.
 
 ## Features
 
-### Long-video memory
+### Long-video memory details
 
 ```bash
 # Run a higher-coverage analysis. Its transcript and visual evidence join the
@@ -119,7 +127,7 @@ openvision memory search "red dial" --video lecture.mp4
 openvision memory ask lecture.mp4 "What happens during the setup demonstration?"
 ```
 
-`observe` saves run artifacts and indexes the evidence it produced in `~/.openvision/runs/runs.db` (or the configured cache directory). `--save-observations` is separate: it writes a human-readable Markdown note under `~/.openvision/observations/videos/`; it is not required for database search. `memory search` works across all indexed sources; add `--video` to filter. `memory sources` lists what is available, and `memory outline` shows its time hierarchy. `memory ask VIDEO QUESTION` retrieves matching intervals and asks the configured VLM to verify them against stored evidence frames; it needs a reachable VLM. Retrieval uses SQLite full-text search, not embeddings. Speaker labels are associated with nearby visual events by time, but are **not** asserted to identify a visible person.
+`observe` saves run artifacts and indexes the evidence it produced in `~/.openvision/runs/runs.db` (or the configured cache directory). `--save-observations` is separate: it writes a human-readable Markdown note under `~/.openvision/observations/videos/`; it is not required for database search. `memory search` works across all indexed sources; add `--video` to filter. `memory sources` lists what is available, and `memory outline` shows its time hierarchy. `memory ask VIDEO QUESTION` retrieves matching intervals and asks the configured VLM to verify them against stored evidence frames; it needs a reachable VLM. Retrieval uses SQLite full-text search, not embeddings.
 
 Raw-frame mode is an agent handoff: its transcript can be indexed, but its images have no searchable visual descriptions until a vision-capable agent analyzes them. Use normal `observe` (or `observe --memory`) when you want visual evidence indexed for later retrieval. Re-running an unchanged observation uses its cache and refreshes its memory index; `--force` recomputes it.
 
@@ -193,7 +201,9 @@ pip install -e ".[test]"
 pytest tests/ -v
 ```
 
-Architecture: `openvision/` (public Python API and schemas), `cli/` (Typer commands), `core/` (video, audio, sampling, streaming), `providers/` (VLM and STT backends), and `storage/` (SQLite cache and paths). See `AGENT_GUIDE.md` for the full agent integration guide.
+Architecture: `openvision/` (public Python API and schemas), `cli/` (Typer commands), `core/` (video, audio, sampling, streaming), `providers/` (VLM and STT backends), and `storage/` (SQLite cache and paths). The command-line interface and its JSON and JSONL output are the agent integration contract.
+
+If Open Vision makes video useful to your agent, [give the project a star](https://github.com/michielhdoteth/openvision). It helps more people discover the project and tells us what to keep building.
 
 ## License
 
