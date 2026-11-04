@@ -29,9 +29,20 @@ def _format_size(size_bytes: int) -> str:
 
 
 @app.command()
-def list_models():
+def list_models(
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+):
     """List all available models and their install status."""
     models = list_all_models()
+
+    if json_output:
+        import json
+        typer.echo(json.dumps([{
+            "name": m.name, "provider": m.provider, "description": m.description,
+            "installed": m.installed, "size_bytes": m.size_bytes,
+            "path": str(m.path) if m.path else None,
+        } for m in models], indent=2))
+        return
 
     table = Table(title="STT Models")
     table.add_column("Model", style="cyan")
@@ -62,58 +73,107 @@ def get(
         False, "--all", "-a",
         help="Install all models (parakeet + whisper variants)",
     ),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
 ):
     """Install STT models for Open Vision.
 
     Examples:
 
-        openvision install parakeet                        # Install parakeet (default)
-        openvision install whisper --model base            # Install whisper base
-        openvision install parakeet --all                  # Install all models
+        openvision install get parakeet                        # Install parakeet (default)
+        openvision install get whisper --model base            # Install whisper base
+        openvision install get parakeet --all                  # Install all models
+
+    Shorthands (same behavior, shorter for agents):
+        openvision install parakeet
+        openvision install whisper --model base
     """
     if all_models:
         _install_all()
         return
 
     if provider == "parakeet":
-        _install_parakeet()
+        _install_st("parakeet", model, json_output)
     elif provider == "whisper":
-        if model is None:
-            console.print("[yellow]Whisper requires a model size. Use --model base/small/medium/large-v3[/yellow]")
-            raise typer.Exit(1)
-        _install_whisper(model)
+        _install_st("whisper", model, json_output)
     else:
-        console.print(f"[red]Unknown provider: {provider}. Use 'parakeet' or 'whisper'.[/red]")
+        message = f"Unknown provider: {provider}. Use 'parakeet' or 'whisper'."
+        if json_output:
+            import json
+            typer.echo(json.dumps({"error": "UNKNOWN_PROVIDER", "message": message}, indent=2))
+        else:
+            console.print(f"[red]{message}[/red]")
         raise typer.Exit(1)
 
 
-def _install_parakeet():
-    """Install the Parakeet model."""
-    status = check_model_status("parakeet", "parakeet-tdt-0.6b-v3-int8")
-    if status.installed:
-        console.print(f"[green]Parakeet model already installed at {status.path}[/green]")
-        return
+@app.command()
+def parakeet(json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON")):
+    """Install the default Parakeet STT model (shorthand for `install get parakeet`)."""
+    _install_st("parakeet", None, json_output)
 
-    try:
-        path = install_model("parakeet", "parakeet-tdt-0.6b-v3-int8")
-        console.print(f"[green]Parakeet model installed to {path}[/green]")
-    except Exception as e:
-        console.print(f"[red]Failed to install Parakeet model: {e}[/red]")
+
+@app.command()
+def whisper(
+    model_size: Optional[str] = typer.Argument(
+        None, help="Model size: tiny, base, small, medium, large-v3",
+    ),
+    model: Optional[str] = typer.Option(
+        None, "--model", "-m",
+        help="Model size (alternative to the positional argument)",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+):
+    """Install a Whisper STT model (shorthand for `install get whisper --model SIZE`)."""
+    size = model or model_size
+    if size is None:
+        message = "Whisper requires a model size. Use: openvision install whisper base"
+        if json_output:
+            import json
+            typer.echo(json.dumps({"error": "MISSING_MODEL_SIZE", "message": message}, indent=2))
+        else:
+            console.print(f"[yellow]{message}[/yellow]")
         raise typer.Exit(1)
+    _install_st("whisper", size, json_output)
 
 
-def _install_whisper(model_size: str):
-    """Install a Whisper model."""
-    status = check_model_status("whisper", model_size)
+def _install_st(provider: str, model: Optional[str], json_output: bool = False) -> None:
+    """Shared installer for one provider/model pair (machine or human output)."""
+    import json
+
+    if provider == "parakeet":
+        provider_key, model_key = "parakeet", "parakeet-tdt-0.6b-v3-int8"
+    elif provider == "whisper":
+        provider_key, model_key = "whisper", f"whisper-{model}"
+    else:
+        message = f"Unknown provider: {provider}. Use 'parakeet' or 'whisper'."
+        if json_output:
+            typer.echo(json.dumps({"error": "UNKNOWN_PROVIDER", "message": message}, indent=2))
+        else:
+            console.print(f"[red]{message}[/red]")
+        raise typer.Exit(code=1)
+
+    status = check_model_status(provider_key, model_key)
     if status.installed:
-        console.print(f"[green]Whisper {model_size} already installed at {status.path}[/green]")
+        if json_output:
+            typer.echo(json.dumps({
+                "model": status.name, "installed": True, "path": str(status.path),
+                "message": "already installed",
+            }, indent=2))
+        else:
+            console.print(f"[green]{status.name} model already installed at {status.path}[/green]")
         return
 
     try:
-        path = install_model("whisper", model_size)
-        console.print(f"[green]Whisper {model_size} installed to {path}[/green]")
+        path = install_model(provider_key, model_key)
+        if json_output:
+            typer.echo(json.dumps({"model": status.name, "installed": True, "path": str(path)}, indent=2))
+        else:
+            console.print(f"[green]{status.name} model installed to {path}[/green]")
     except Exception as e:
-        console.print(f"[red]Failed to install Whisper {model_size}: {e}[/red]")
+        message = f"Failed to install {status.name}: {e}"
+        if json_output:
+            typer.echo(json.dumps({"error": "INSTALL_FAILED", "message": message}, indent=2))
+        else:
+            console.print(f"[red]{message}[/red]")
         raise typer.Exit(1)
 
 
@@ -122,11 +182,11 @@ def _install_all():
     console.print(Panel("Installing all STT models", title="Open Vision Install"))
 
     console.print("\n[bold]1/6 Parakeet TDT 0.6B v3[/bold]")
-    _install_parakeet()
+    _install_st("parakeet", None)
 
     whisper_sizes = ["tiny", "base", "small", "medium", "large-v3"]
     for i, size in enumerate(whisper_sizes, 2):
         console.print(f"\n[bold]{i}/6 Whisper {size}[/bold]")
-        _install_whisper(size)
+        _install_st("whisper", size)
 
     console.print("\n[green bold]All models installed.[/green bold]")

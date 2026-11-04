@@ -71,7 +71,6 @@ class VideoMemory:
         conn = sqlite3.connect(self.db_path)
         tags_json = json.dumps(tags or [])
 
-        # Build a transcript lookup by timestamp range
         transcript_map = {}
         if transcript_segments:
             for seg in transcript_segments:
@@ -88,11 +87,9 @@ class VideoMemory:
             ts_str = frame.get("timestamp_str", f"{ts:.1f}s")
             frame_path = frame.get("path", "")
 
-            # Find nearest transcript text
             ts_key = round(ts, 0)
             transcript_text = transcript_map.get(ts_key, "")
             if not transcript_text and transcript_map:
-                # Try nearest timestamp
                 nearest = min(transcript_map.keys(), key=lambda k: abs(k - ts), default=None)
                 if nearest is not None and abs(nearest - ts) < 2.0:
                     transcript_text = transcript_map[nearest]

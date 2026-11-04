@@ -78,7 +78,6 @@ def process(
 
     input_path = Path(path)
     if not input_path.exists():
-        # Try as URL
         from core.download import is_url, download_video
         if is_url(path):
             config = load_config()
@@ -92,11 +91,9 @@ def process(
     config = load_config()
     mode_config = get_mode_config(config, mode)
 
-    # Probe
     video_meta = probe(str(input_path))
     duration = video_meta["duration_seconds"]
 
-    # Smart sample
     vfr_info = detect_vfr(str(input_path))
     vfr_mode = vfr_info.get("mode", "cfr")
     auto_max = auto_fps(duration)
@@ -107,14 +104,12 @@ def process(
     else:
         frames = smart_sample(str(input_path), fps=fps, max_frames=actual_max, max_resolution=resolution, vfr_mode=vfr_mode)
 
-    # VLM analysis
     vlm_config = config.get("models", {}).get("vlm", {})
     if provider:
         vlm_config["provider"] = provider
 
     vlm = ProviderRegistry.create(vlm_config)
 
-    # Build timeline from frames
     timeline = []
     for frame in frames:
         entry = TimelineEntry(
@@ -125,7 +120,6 @@ def process(
         )
         timeline.append(entry)
 
-    # Transcribe if requested
     transcript = None
     if transcribe_audio:
         from providers import get_provider
@@ -190,7 +184,6 @@ def transcribe(
 
     stt = get_provider(provider, config)
 
-    # Time window
     window_start = parse_time(from_time) if from_time else None
     window_end = parse_time(to_time) if to_time else None
 
@@ -205,7 +198,6 @@ def transcribe(
             end_s = window_end or 999999
             extract_audio_segment(str(input_path), start_s, end_s, seg_path)
             transcript = stt.transcribe_audio(seg_path, language)
-            # Adjust timestamps
             if window_start and transcript.segments:
                 for seg in transcript.segments:
                     seg.start += window_start

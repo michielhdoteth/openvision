@@ -176,7 +176,6 @@ def merge_transcript_with_diarization(
         speaker_overlap: dict[str, float] = {}
 
         for dia in diarization_segments:
-            # Calculate temporal intersection
             intersection = min(dia.end, seg_end) - max(dia.start, seg_start)
             if intersection <= 0:
                 continue
@@ -185,10 +184,8 @@ def merge_transcript_with_diarization(
             speaker_overlap[speaker] = speaker_overlap.get(speaker, 0.0) + intersection
 
         if speaker_overlap:
-            # Assign speaker with greatest overlap
             speaker = max(speaker_overlap.items(), key=lambda x: x[1])[0]
         elif fill_nearest and diarization_segments:
-            # Fallback: find nearest diarization segment by midpoint
             midpoint = (seg_start + seg_end) / 2
             nearest = min(
                 diarization_segments,
@@ -198,7 +195,6 @@ def merge_transcript_with_diarization(
         else:
             speaker = ""
 
-        # Create new segment with speaker label
         merged.append(type(seg)(
             start=seg.start,
             end=seg.end,

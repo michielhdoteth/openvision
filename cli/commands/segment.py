@@ -40,11 +40,9 @@ def segment_cmd(
         console.print("[red]Error:[/red] Prompt cannot be empty.")
         raise typer.Exit(code=1)
 
-    # Load config
     config = load_config()
     mode_config = get_mode_config(config, mode)
 
-    # Check GPU
     actual_mode, warning = auto_downgrade_mode(mode, config)
     if warning:
         console.print(f"[yellow]Warning:[/yellow] {warning}")
@@ -52,13 +50,11 @@ def segment_cmd(
     seg_fps = fps or config.get("defaults", {}).get("segmentation_fps", 0.25)
     resolution = mode_config.get("resolution", 768)
 
-    # Probe video
     video_meta = probe(str(input_path))
     actual_end = end_time if end_time > 0 else video_meta["duration_seconds"]
 
     console.print(f"[dim]Segmenting '{prompt}' from {start_time}s to {actual_end}s[/dim]")
 
-    # Extract frames in the time range
     frames = smart_sample(
         str(input_path),
         fps=seg_fps,
@@ -66,7 +62,6 @@ def segment_cmd(
         max_resolution=resolution,
     )
 
-    # Filter by time range
     frames = [f for f in frames if start_time <= f["timestamp"] <= actual_end]
 
     if not frames:
@@ -75,13 +70,11 @@ def segment_cmd(
 
     console.print(f"[dim]Analyzing {len(frames)} frames for '{prompt}'...[/dim]")
 
-    # Create run directory
     from storage.paths import run_cache_dir
     cache_dir = str(run_cache_dir(config))
     cache = RunCache(cache_dir)
     run_dir = cache.create_run("seg_" + prompt.replace(" ", "_")[:20], video_meta)
 
-    # Load SAM
     log_vram("before_segmentation")
     sam_config = config.get("models", {}).get("segmentation", {})
     try:
@@ -106,7 +99,6 @@ def segment_cmd(
 
     log_vram("after_segmentation")
 
-    # Build output
     objects = []
     for obj_data in result.get("objects", []):
         obj = SegmentObject(
@@ -124,7 +116,6 @@ def segment_cmd(
         objects=objects,
     )
 
-    # Save
     cache.save_artifact(run_dir, "segmentation.json", output.model_dump())
 
     from core.stream import create_jsonl_writer

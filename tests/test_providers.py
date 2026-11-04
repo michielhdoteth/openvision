@@ -8,9 +8,9 @@ from unittest.mock import patch
 from providers.base import VlmProvider, VlmResponse, TokenUsage
 from providers.lmstudio import LmStudioProvider
 from providers.openai_compat import OpenAICompatProvider
-from providers.ollama import OllamaProvider
 from providers.llamacpp import LlamaCppProvider
 from providers.cloud import CloudProvider
+from providers.gemini import GeminiProvider
 from providers.registry import ProviderRegistry, _extract_models
 
 
@@ -40,10 +40,6 @@ def _is_available(name: str, host: str, port: int) -> bool:
 lmstudio_available = pytest.mark.skipif(
     not _is_available("lmstudio", "localhost", 1234),
     reason="LM Studio not running on :1234",
-)
-ollama_available = pytest.mark.skipif(
-    not _is_available("ollama", "localhost", 11434),
-    reason="Ollama not running on :11434",
 )
 llamacpp_available = pytest.mark.skipif(
     not _is_available("llamacpp", "localhost", 8080),
@@ -381,201 +377,6 @@ class TestLmStudioProvider:
             provider.close()
 
 
-# ------------------------------------------------------------------
-# Ollama provider
-# ------------------------------------------------------------------
-
-@ollama_available
-class TestOllamaProvider:
-    """Tests for the Ollama native API provider."""
-
-    def test_init(self):
-        config = {
-            "model": "llava:13b",
-            "base_url": "http://localhost:11434",
-            "temperature": 0.3,
-            "max_tokens": 2048,
-            "timeout": 60,
-            "keep_alive": "10m",
-        }
-        provider = OllamaProvider(config)
-        try:
-            assert provider.model_name == "llava:13b"
-            assert provider.base_url == "http://localhost:11434"
-            assert provider.temperature == 0.3
-            assert provider.max_tokens == 2048
-            assert provider.timeout == 60
-            assert provider.keep_alive == "10m"
-            assert provider.PROVIDER_NAME == "ollama"
-        finally:
-            provider.close()
-
-    def test_init_defaults(self):
-        provider = OllamaProvider({})
-        try:
-            assert provider.model_name == "google/gemma-4-e2b"
-            assert provider.base_url == "http://localhost:11434"
-            assert provider.temperature == 0.1
-            assert provider.max_tokens == 1024
-            assert provider.timeout == 120
-            assert provider.keep_alive == "5m"
-        finally:
-            provider.close()
-
-    def test_describe_frames_empty(self):
-        provider = OllamaProvider({})
-        try:
-            result = provider.describe_frames([])
-            assert result == "No frames to analyze."
-        finally:
-            provider.close()
-
-    def test_describe_frames_truncated(self):
-        provider = OllamaProvider({})
-        try:
-            frames = [
-                (float(i), np.ones((10, 10, 3), dtype=np.uint8) * 128)
-                for i in range(15)
-            ]
-            mock_resp = {"message": {"content": "ok"}}
-            with patch.object(provider, "_chat_completion", return_value=mock_resp):
-                result = provider.describe_frames(frames, "test")
-            lines = result.split("\n")
-            assert len(lines) == 11
-            assert any("truncated" in line for line in lines)
-        finally:
-            provider.close()
-
-    def test_describe_frames_timestamps(self):
-        provider = OllamaProvider({})
-        try:
-            frames = [(65.0, np.ones((10, 10, 3), dtype=np.uint8) * 128)]
-            mock_resp = {"message": {"content": "ok"}}
-            with patch.object(provider, "_chat_completion", return_value=mock_resp):
-                result = provider.describe_frames(frames, "test")
-            assert "[01:05]" in result
-        finally:
-            provider.close()
-
-    def test_connection_error_returns_message(self):
-        config = {
-            "base_url": "http://localhost:9999",
-            "model": "test",
-            "timeout": 2,
-        }
-        provider = OllamaProvider(config)
-        try:
-            img = np.ones((10, 10, 3), dtype=np.uint8)
-            result = provider.describe_image(img, "test")
-            assert isinstance(result, VlmResponse)
-            assert "Could not connect" in result.content
-            assert "ollama serve" in result.content
-        finally:
-            provider.close()
-
-    def test_connection_error_text_query(self):
-        config = {
-            "base_url": "http://localhost:9999",
-            "model": "test",
-            "timeout": 2,
-        }
-        provider = OllamaProvider(config)
-        try:
-            result = provider.query_text("hello")
-            assert isinstance(result, VlmResponse)
-            assert "Could not connect" in result.content
-        finally:
-            provider.close()
-
-    def test_health_check_bad_url(self):
-        provider = OllamaProvider(
-            {"base_url": "http://localhost:19999", "timeout": 2}
-        )
-        try:
-            assert provider.check_health() is False
-        finally:
-            provider.close()
-
-    def test_health_check_ollama_running(self):
-        """Integration test - Ollama should be reachable."""
-        provider = OllamaProvider({})
-        try:
-            health = provider.check_health()
-            assert isinstance(health, bool)
-        finally:
-            provider.close()
-
-    def test_list_models_bad_url(self):
-        provider = OllamaProvider(
-            {"base_url": "http://localhost:19999", "timeout": 2}
-        )
-        try:
-            models = provider.list_models()
-            assert models == []
-        finally:
-            provider.close()
-
-    def test_list_models_ollama_running(self):
-        """Integration test - list models from Ollama."""
-        provider = OllamaProvider({})
-        try:
-            if not provider.check_health():
-                pytest.skip("Ollama not running")
-            models = provider.list_models()
-            assert isinstance(models, list)
-        finally:
-            provider.close()
-
-    def test_describe_image(self):
-        """Integration test - describe an image via Ollama."""
-        config = {"model": "llava:7b"}
-        provider = OllamaProvider(config)
-        try:
-            if not provider.check_health():
-                pytest.skip("Ollama not running")
-            img = np.ones((100, 100, 3), dtype=np.uint8) * 128
-            result = provider.describe_image(img)
-            assert isinstance(result, VlmResponse)
-            assert len(result.content) > 0
-        finally:
-            provider.close()
-
-    def test_describe_image_with_question(self):
-        """Integration test - describe image with specific question."""
-        config = {"model": "llava:7b"}
-        provider = OllamaProvider(config)
-        try:
-            if not provider.check_health():
-                pytest.skip("Ollama not running")
-            img = np.ones((100, 100, 3), dtype=np.uint8) * 128
-            result = provider.describe_image(img, "What color is this?")
-            assert isinstance(result, VlmResponse)
-            assert len(result.content) > 0
-        finally:
-            provider.close()
-
-    def test_query_text(self):
-        """Integration test - text-only query to Ollama."""
-        provider = OllamaProvider({})
-        try:
-            if not provider.check_health():
-                pytest.skip("Ollama not running")
-            result = provider.query_text("Say hello in one word.")
-            assert isinstance(result, VlmResponse)
-            assert len(result.content) > 0
-        finally:
-            provider.close()
-
-    def test_pull_model_bad_url(self):
-        provider = OllamaProvider({"base_url": "http://localhost:19999", "timeout": 2})
-        try:
-            import httpx
-            with patch.object(provider._client, "post", side_effect=httpx.ConnectError("mocked")):
-                result = provider.pull_model("nonexistent")
-            assert result is False
-        finally:
-            provider.close()
-
 
 # ------------------------------------------------------------------
 # llama.cpp provider
@@ -798,12 +599,13 @@ class TestProviderRegistry:
         finally:
             provider.close()
 
-    def test_create_explicit_ollama(self):
-        config = {"provider": "ollama", "model": "llava:7b"}
+    def test_create_explicit_gemini(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        config = {"provider": "gemini", "model": "gemini-3.1-flash-lite"}
         provider = ProviderRegistry.create(config)
         try:
-            assert isinstance(provider, OllamaProvider)
-            assert provider.model_name == "llava:7b"
+            assert isinstance(provider, GeminiProvider)
+            assert provider.model_name == "gemini-3.1-flash-lite"
         finally:
             provider.close()
 
@@ -858,7 +660,7 @@ class TestProviderRegistry:
         # Mock detect to return a known provider
         monkeypatch.setattr(
             ProviderRegistry, "detect",
-            lambda: [{"name": "lmstudio", "config": {"base_url": "http://test", "model": "m"}}],
+            lambda config=None: [{"name": "lmstudio", "config": {"base_url": "http://test", "model": "m"}}],
         )
         provider = ProviderRegistry.create({"provider": "auto"})
         try:
@@ -868,14 +670,15 @@ class TestProviderRegistry:
 
     def test_create_auto_no_providers(self, monkeypatch):
         """Auto-detect with no running providers raises ValueError."""
-        monkeypatch.setattr(ProviderRegistry, "detect", lambda: [])
+        monkeypatch.setattr(ProviderRegistry, "detect", lambda config=None: [])
         with pytest.raises(ValueError, match="No VLM provider found"):
             ProviderRegistry.create({"provider": "auto"})
 
     def test_list_providers(self):
         providers = ProviderRegistry.list_providers()
         assert "lmstudio" in providers
-        assert "ollama" in providers
+        assert "gemini" in providers
+        assert "ollama" not in providers
         assert "llamacpp" in providers
         assert "openai" in providers
         assert "groq" in providers
@@ -888,7 +691,7 @@ class TestProviderRegistry:
         monkeypatch.setattr(httpx, "get", mock_get)
         result = ProviderRegistry.detect()
         assert isinstance(result, list)
-        assert len(result) >= 3
+        assert len(result) >= 2
 
     def test_detect_result_structure(self, monkeypatch):
         import httpx
@@ -901,7 +704,9 @@ class TestProviderRegistry:
             assert "status" in item
             assert item["status"] in ("available", "unavailable", "timeout", "error")
 
-    def test_lmstudio_defaults_set(self):
+    def test_lmstudio_defaults_set(self, monkeypatch):
+        # No running server: the default fallback port is 1234.
+        monkeypatch.setattr(ProviderRegistry, "detect", lambda config=None: [])
         config = {"provider": "lmstudio"}
         provider = ProviderRegistry.create(config)
         try:
@@ -909,11 +714,13 @@ class TestProviderRegistry:
         finally:
             provider.close()
 
-    def test_ollama_defaults_set(self):
-        config = {"provider": "ollama"}
-        provider = ProviderRegistry.create(config)
+    def test_gemini_defaults_set(self, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        provider = ProviderRegistry.create({"provider": "gemini"})
         try:
-            assert provider.base_url == "http://localhost:11434"
+            assert isinstance(provider, GeminiProvider)
+            assert provider.base_url == "https://generativelanguage.googleapis.com/v1beta"
+            assert provider.model_name == "gemini-3.1-flash-lite"
         finally:
             provider.close()
 
@@ -931,10 +738,9 @@ class TestProviderRegistry:
 # ------------------------------------------------------------------
 
 class TestExtractModels:
-    def test_ollama_format(self):
+    def test_ollama_shape_removed(self):
         data = {"models": [{"name": "llava:7b"}, {"name": "mistral"}]}
-        models = _extract_models("ollama", data)
-        assert models == ["llava:7b", "mistral"]
+        assert _extract_models("ollama", data) == []
 
     def test_lmstudio_format(self):
         data = {"data": [{"id": "model-a"}, {"id": "model-b"}]}

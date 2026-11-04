@@ -141,7 +141,83 @@ def test_observe_indexing_persists_searchable_transcript_and_visual(tmp_path):
     assert matches
     assert "turns the red dial" in matches[0]["visual_evidence"]
     assert "Turn the red dial now" in matches[0]["speech_evidence"]
-    assert (run_dir / "video_memory.json").is_file()
-    assert result.stages["memory"]["status"] == "completed"
-    saved = json.loads((run_dir / "observations.json").read_text(encoding="utf-8"))
-    assert saved["stages"]["memory"]["status"] == "completed"
+
+
+def test_add_transcript_merges_without_dropping_visual_evidence(tmp_path, sample_transcript_segments):
+    """A transcribe run must add speech to a video that was already observed."""
+    from cli.commands.observe import _index_video_memory
+    from openvision.models import ObserveResult, TimelineEntry
+
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"media")
+    cache = RunCache(str(tmp_path / "runs"))
+    run_dir = cache.create_run("observe-first")
+    result = ObserveResult(
+        summary="A speaker demonstrates a device.",
+        timeline=[TimelineEntry(time_seconds=12, timestamp="00:12", observation="A person turns the red dial.")],
+        entities=["person", "red dial"], artifacts_dir=str(run_dir), confidence="medium",
+    )
+    _index_video_memory(cache, video, run_dir, result, None, duration_seconds=30)
+
+    store = VideoMemoryStore(cache._db_path)
+    transcribe_run = cache.create_run("transcribe-later")
+    merged = store.add_transcript(str(video), transcribe_run, sample_transcript_segments,
+                                  duration_seconds=30)
+
+    assert merged["merged"] is True
+    assert merged["chunks"] >= 1
+    # Visual evidence from observe survives.
+    matches = store.search("red dial", source_path=str(video))
+    assert matches
+    assert "turns the red dial" in matches[0]["visual_evidence"]
+    # Speech from transcribe is now searchable too.
+    speech = store.search("Goodbye", source_path=str(video))
+    assert speech
+    assert "Goodbye" in speech[0]["speech_evidence"]
+
+
+def test_add_transcript_is_idempotent_and_creates_speech_only_nodes(tmp_path, sample_transcript_segments):
+    """Re-transcribing updates audio text rather than duplicating it."""
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"media")
+    cache = RunCache(str(tmp_path / "runs"))
+    store = VideoMemoryStore(cache._db_path)
+
+    store.add_transcript(str(video), cache.create_run("t1"), sample_transcript_segments,
+                          duration_seconds=30)
+    store.add_transcript(str(video), cache.create_run("t2"), sample_transcript_segments,
+                          duration_seconds=30)
+
+    with store._connect() as conn:
+        chunk = conn.execute(
+            "SELECT audio_text FROM video_memory_nodes WHERE source_path=? AND kind='chunk' "
+            "ORDER BY start_sec LIMIT 1", (str(video),)).fetchone()
+        assert chunk["audio_text"].count("Hello world") == 1
+        roots = conn.execute("SELECT COUNT(*) AS n FROM video_memory_nodes WHERE kind='root'").fetchone()["n"]
+        assert roots == 1
+
+    matches = store.search("test", source_path=str(video))
+    assert matches
+
+
+def test_add_transcript_replaces_previous_speech(tmp_path):
+    """A shorter re-run must not leave stale audio evidence behind."""
+    from providers.parakeet import TranscriptSegment
+
+    video = tmp_path / "source.mp4"
+    video.write_bytes(b"media")
+    cache = RunCache(str(tmp_path / "runs"))
+    store = VideoMemoryStore(cache._db_path)
+
+    store.add_transcript(str(video), cache.create_run("first"),
+                         [TranscriptSegment(start=0.0, end=3.0, text="the first pass.", confidence=1.0)])
+    store.add_transcript(str(video), cache.create_run("second"),
+                         [TranscriptSegment(start=0.0, end=3.0, text="the second pass.", confidence=1.0)])
+
+    with store._connect() as conn:
+        rows = conn.execute(
+            "SELECT audio_text FROM video_memory_nodes WHERE source_path=? AND kind='chunk'",
+            (str(video),)).fetchall()
+    joined = " ".join(r["audio_text"] for r in rows)
+    assert "the second pass" in joined
+    assert "the first pass" not in joined

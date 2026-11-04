@@ -27,7 +27,6 @@ def generate_viewer(
     """
     import cv2
 
-    # Encode frames as base64 JPEG
     frame_cards = []
     for i, frame in enumerate(frames):
         img = frame.get("image")
@@ -44,7 +43,6 @@ def generate_viewer(
             "image_b64": b64,
         })
 
-    # Build transcript HTML
     transcript_html = ""
     if transcript_segments:
         transcript_html = '<div class="transcript"><h2>Transcript</h2><div class="transcript-entries">'
@@ -57,7 +55,6 @@ def generate_viewer(
             transcript_html += f'<div class="transcript-entry" data-time="{start:.1f}"><span class="ts">[{ts_str}]</span> {text}</div>'
         transcript_html += '</div></div>'
 
-    # Build frame cards HTML
     cards_html = ""
     for fc in frame_cards:
         cards_html += f'''

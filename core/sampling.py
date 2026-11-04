@@ -5,9 +5,6 @@ from typing import Optional
 from core.video import extract_frames, probe, parse_time
 
 
-# ---------------------------------------------------------------------------
-# Sliding-window dedup with 3 channels
-# ---------------------------------------------------------------------------
 
 def _hist_hsv(frame: np.ndarray) -> np.ndarray:
     """Compute normalized HSV histogram for a frame."""
@@ -69,8 +66,6 @@ def sliding_window_dedup(
 
         hist = _hist_hsv(img)
 
-        # --- Channel 1: Global similarity ---
-        # Compare against all globally kept reference frames
         globally_similar = False
         for ref_hist in kept_hists:
             sim = cv2.compareHist(ref_hist, hist, cv2.HISTCMP_CORREL)
@@ -79,7 +74,6 @@ def sliding_window_dedup(
                 break
 
         if globally_similar:
-            # --- Channel 3: Action (motion) override ---
             # Even if globally similar, keep if there's significant motion
             if kept_indices:
                 prev_img = frames[kept_indices[-1]].get("image")
@@ -94,7 +88,6 @@ def sliding_window_dedup(
             stats["dropped_global"] += 1
             continue
 
-        # --- Channel 2: Settled-local (sliding window) ---
         # Check if the recent window is "settled" (all similar to each other)
         window_start = max(0, i - window_size)
         window_frames = frames[window_start:i]
@@ -111,7 +104,6 @@ def sliding_window_dedup(
                     stats["dropped_local"] += 1
                     continue
 
-        # Keep the frame
         kept_indices.append(i)
         kept_hists.append(hist)
         stats["kept"] += 1
@@ -145,18 +137,15 @@ def detect_scenes(
         if frame["image"] is None:
             continue
 
-        # Convert to HSV for better illumination invariance
         hsv = cv2.cvtColor(frame["image"], cv2.COLOR_BGR2HSV)
         # Use all 3 HSV channels so uniform black/white frames are distinguishable
         hist = cv2.calcHist([hsv], [0, 1, 2], None, [50, 60, 30], [0, 180, 0, 256, 0, 256])
         cv2.normalize(hist, hist, 0, 1, cv2.NORM_MINMAX)
         
         if prev_hist is not None:
-            # Chi-squared distance
             diff = cv2.compareHist(prev_hist, hist, cv2.HISTCMP_CHISQR)
 
             if diff > threshold:
-                # Check gap from last scene change
                 if not scene_indices or (i - scene_indices[-1]) >= min_scene_gap:
                     scene_indices.append(i)
 
@@ -232,23 +221,18 @@ def smart_sample(
     Returns:
         List of selected frame dicts with {index, timestamp, timestamp_str, image}
     """
-    # Step 1: Extract frames (VFR-aware)
     frames = extract_frames(path, fps=fps, max_frames=max_frames, max_resolution=max_resolution, vfr_mode=vfr_mode)
 
     if not frames:
         return []
 
-    # Step 2: Detect scene changes
     scene_indices = detect_scenes(frames, threshold=scene_threshold)
 
-    # Step 3: Start with uniform sample, then add scene changes
     uniform_indices = list(range(0, len(frames), max(1, len(frames) // min(max_frames, len(frames)))))
     uniform_indices = uniform_indices[:max_frames]
 
-    # Merge uniform + scene indices, keep order
     all_indices = sorted(set(uniform_indices + scene_indices))
 
-    # Step 4: Deduplicate (but keep scene change frames)
     # We dedup the uniform samples first, then merge scene changes
     deduped_uniform = deduplicate(frames, list(range(len(frames))), similarity_threshold=dedup_threshold)
 
@@ -271,11 +255,9 @@ def find_keyframes_for_question(
         return []
 
     if question_relevant_indices:
-        # Use specific indices if provided
         selected = [frames[i] for i in question_relevant_indices if i < len(frames)]
         return selected[:max_keyframes]
 
-    # Evenly spaced
     step = max(1, len(frames) // min(max_keyframes, len(frames)))
     return [frames[i] for i in range(0, len(frames), step)][:max_keyframes]
 
@@ -306,7 +288,6 @@ def adaptive_sample(
     from core.video import extract_frames, probe, parse_time
     from core.sampling import detect_scenes
 
-    # Handle nonexistent videos gracefully
     try:
         meta = probe(path)
     except FileNotFoundError:
@@ -315,18 +296,15 @@ def adaptive_sample(
     duration = meta["duration_seconds"]
     video_fps = meta["fps"]
 
-    # Step 2: Extract a coarse sample for scene detection
     # Use 1fps for scene detection (covers full video)
     coarse_frames = extract_frames(path, fps=1, max_frames=300, max_resolution=max_resolution, vfr_mode=vfr_mode)
 
     if not coarse_frames:
         return []
 
-    # Step 3: Detect scene changes in coarse sample
     scene_indices = detect_scenes(coarse_frames, threshold=scene_threshold)
     scene_times = [coarse_frames[i]["timestamp"] for i in scene_indices]
 
-    # Step 4: Build list of time ranges to sample
     # Each range is (start_time, end_time, fps)
     ranges = []
 
@@ -334,7 +312,6 @@ def adaptive_sample(
         # No scene changes -- just sample evenly
         ranges.append((0.0, duration, base_fps))
     else:
-        # Sort scene times and build ranges with dense windows
         all_boundaries = [0.0] + scene_times + [duration]
 
         for i in range(len(all_boundaries) - 1):
@@ -342,7 +319,6 @@ def adaptive_sample(
             seg_end = all_boundaries[i + 1]
             seg_len = seg_end - seg_start
 
-            # Check if this segment contains a scene change
             is_dense = any(
                 abs(st - (seg_start + seg_len / 2)) < dense_window / 2
                 for st in scene_times
@@ -352,22 +328,17 @@ def adaptive_sample(
                 # Dense sampling for the whole short segment
                 ranges.append((seg_start, seg_end, max(base_fps, dense_fps)))
             else:
-                # Sparse base sampling
                 ranges.append((seg_start, seg_end, base_fps))
-                # Add dense window around scene change
                 for st in scene_times:
                     if seg_start < st < seg_end:
                         dw_start = max(seg_start, st - dense_window / 2)
                         dw_end = min(seg_end, st + dense_window / 2)
                         ranges.append((dw_start, dw_end, dense_fps))
 
-    # Step 5: Merge overlapping ranges and sample
-    # Sort and merge
     ranges.sort(key=lambda r: r[0])
     merged = []
     for r in ranges:
         if merged and r[0] <= merged[-1][1]:
-            # Overlap -- keep higher FPS
             existing = merged[-1]
             new_fps = max(existing[2], r[2])
             merged[-1] = (existing[0], max(existing[1], r[1]), new_fps)
@@ -375,24 +346,35 @@ def adaptive_sample(
             merged.append(r)
 
     # Reuse the single coarse decode. The prior implementation decoded the
-    # complete video once for every scene range. Prefer frames near scene cuts,
-    # then fill the remaining budget with evenly-spaced coverage.
+    # complete video once for every scene range.
+    #
+    # Selection is an even lattice over the whole coarse pass, anchored at both
+    # ends, plus a bonus trade of a few interior lattice points for the frames
+    # nearest real scene cuts. Taking scene candidates alone (the old
+    # `scene_candidates[:max_frames]`) front-loaded long videos: whenever the
+    # opening was change-dense, every sample landed in the first few minutes and
+    # the tail of the video went unsampled without any error.
     scene_candidates = [
         i for i, frame in enumerate(coarse_frames)
         if any(abs(frame["timestamp"] - scene_time) <= dense_window / 2 for scene_time in scene_times)
     ]
-    frames = [coarse_frames[i] for i in scene_candidates[:max_frames]]
-    if len(frames) < max_frames:
-        chosen = set(scene_candidates[:max_frames])
-        remaining = [i for i in range(len(coarse_frames)) if i not in chosen]
-        slots = max_frames - len(frames)
-        if remaining and slots:
-            step = len(remaining) / min(slots, len(remaining))
-            for n in range(min(slots, len(remaining))):
-                chosen.add(remaining[int(n * step)])
-        frames = [coarse_frames[i] for i in sorted(chosen)]
+    budget = max(0, max_frames)
+    lattice = _even_lattice(len(coarse_frames), budget)
+    chosen = set(lattice)
 
-    # Step 7: Sort by timestamp and cap at max_frames
+    interior = list(range(1, max(1, budget - 1)))
+    scene_slots = min(len(scene_candidates), len(interior) // 3)
+    if scene_slots:
+        scene_step = len(scene_candidates) / scene_slots
+        for n in range(scene_slots):
+            scene_index = scene_candidates[min(len(scene_candidates) - 1, int(n * scene_step))]
+            if scene_index in chosen:
+                continue
+            chosen.discard(lattice[interior[int(n * len(interior) / scene_slots)]])
+            chosen.add(scene_index)
+
+    frames = [coarse_frames[i] for i in sorted(chosen)]
+
     frames.sort(key=lambda f: f["timestamp"])
 
     if len(frames) > max_frames:
@@ -401,3 +383,21 @@ def adaptive_sample(
         frames = [frames[int(i * step)] for i in range(max_frames)]
 
     return frames
+
+
+def _even_lattice(total: int, slots: int) -> list[int]:
+    """Indices spread evenly over range(total), anchored at the first and last.
+
+    Anchoring the ends is what guarantees a sample covers the whole source: a
+    plain `int(i * total / slots)` lattice stops short of the final frame
+    whenever total is not a multiple of slots, which is what let long videos
+    look complete while missing their tail.
+    """
+    if slots <= 0 or total <= 0:
+        return []
+    if slots >= total:
+        return list(range(total))
+    if slots == 1:
+        return [total // 2]
+    last = total - 1
+    return sorted({int(round(i * last / (slots - 1))) for i in range(slots)})

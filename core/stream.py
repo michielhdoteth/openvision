@@ -58,33 +58,33 @@ class JsonlWriter:
     def emit_probe(self, metadata: dict):
         self.emit("probe", metadata)
 
-    def emit_frame(self, index: int, timestamp: float, path: str = "", detections: list = None):
-        data = {"index": index, "timestamp": timestamp}
+    def emit_frame(self, index: int, timestamp: float, path: str = "", detections: Optional[list] = None):
+        data: dict[str, Any] = {"index": index, "timestamp": timestamp}
         if path:
             data["path"] = path
         if detections:
             data["detections"] = detections
         self.emit("frame", data)
 
-    def emit_transcript(self, start: float, end: float, text: str, speaker: str = None):
-        data = {"start": start, "end": end, "text": text}
+    def emit_transcript(self, start: float, end: float, text: str, speaker: Optional[str] = None):
+        data: dict[str, Any] = {"start": start, "end": end, "text": text}
         if speaker:
             data["speaker"] = speaker
         self.emit("transcript", data)
 
-    def emit_summary(self, summary: str, entities: list = None):
-        data = {"summary": summary}
+    def emit_summary(self, summary: str, entities: Optional[list] = None):
+        data: dict[str, Any] = {"summary": summary}
         if entities:
             data["entities"] = entities
         self.emit("summary", data)
 
-    def emit_error(self, message: str, code: str = None):
-        data = {"message": message}
+    def emit_error(self, message: str, code: Optional[str] = None):
+        data: dict[str, Any] = {"message": message}
         if code:
             data["code"] = code
         self.emit("error", data)
 
-    def emit_done(self, stats: dict = None):
+    def emit_done(self, stats: Optional[dict] = None):
         self.emit("done", stats or {})
 
     def flush(self):

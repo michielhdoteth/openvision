@@ -59,7 +59,6 @@ def observations_dir(config: Optional[dict] = None) -> Path:
     Resolves to ``~/.openvision/observations/videos/`` by default.
     Migrates from the legacy ``~/.openvision/memory/`` path if present.
     """
-    # Auto-migrate from legacy memory/ path
     _migrate_memory_to_observations(config)
 
     base = _subpath(config, "observations", "observations")

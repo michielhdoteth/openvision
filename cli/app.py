@@ -6,6 +6,28 @@ from typing import Optional
 from cli.commands import probe, observe, ask, segment, track, status, observations, transcribe, ground, skill, install, memory
 from core.errors import OpenVisionError, handle_cli_error
 
+
+def _force_utf8_console() -> None:
+    """Force UTF-8 on the console so Rich does not fall back to ASCII boxes.
+
+    This lives here, not in the root ``__main__.py`` shim, because
+    ``[project.scripts] openvision = "cli.app:app"`` imports this module directly
+    and would otherwise bypass the reconfigure, rendering mangled box drawing
+    and ellipsis characters in the console script.
+    """
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
+_force_utf8_console()
+
 app = typer.Typer(
     name="openvision",
     help="Self-hosted, privacy-first AI vision tool for CLI and agents",
@@ -48,7 +70,6 @@ def main_callback(
     pass
 
 
-# Register commands
 app.command(name="probe")(probe.probe_cmd)
 app.command(name="observe")(observe.observe_cmd)
 app.command(name="ask")(ask.ask_cmd)

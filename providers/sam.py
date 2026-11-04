@@ -64,7 +64,6 @@ class SamProvider:
             logger.warning(f"SAM segmentation failed: {e}")
             logger.info(f"Attempting fallback model: {self.fallback}")
             self.unload()
-            # Try fallback
             original_model = self.model
             self.model = self.fallback
             try:
@@ -130,7 +129,6 @@ class SamProvider:
 
         log_vram("before_sam_load")
 
-        # Clear CUDA cache before loading
         unload_model()
 
         logger.info(f"Loading SAM model: {self.model}")
@@ -225,7 +223,6 @@ class SamProvider:
         with torch.no_grad():
             outputs = self._model(**inputs)
 
-        # Process outputs
         predicted_masks = outputs.pred_masks
         iou_scores = outputs.iou_scores
 
@@ -234,10 +231,8 @@ class SamProvider:
             mask = predicted_masks[0, i].cpu().numpy()
             score = float(iou_scores[0, i].cpu())
 
-            # Convert mask to binary
             binary_mask = (mask > 0.0).astype(np.uint8)
 
-            # Get bounding box from mask
             rows = np.any(binary_mask, axis=1)
             cols = np.any(binary_mask, axis=0)
             if rows.any() and cols.any():
@@ -260,7 +255,6 @@ class SamProvider:
         import cv2
         path_obj = Path(path)
         path_obj.parent.mkdir(parents=True, exist_ok=True)
-        # Scale to 0-255 for saving
         if mask.max() <= 1:
             mask_img = (mask * 255).astype(np.uint8)
         else:
@@ -312,7 +306,6 @@ class Sam3Provider:
         """
         self._ensure_loaded()
 
-        # Convert numpy to PIL
         from PIL import Image
         pil_image = Image.fromarray(image)
 
@@ -379,7 +372,6 @@ class Sam3Provider:
 
         gpu_log_vram("before_sam3_load")
 
-        # Clear CUDA cache before loading
         gpu_unload()
 
         try:

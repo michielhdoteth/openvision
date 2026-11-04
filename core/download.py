@@ -19,7 +19,6 @@ def is_url(path: str) -> bool:
 
 def get_video_info(url: str) -> dict:
     """Fetch video metadata without downloading."""
-    # Prefer Python API
     try:
         import yt_dlp
 
@@ -73,7 +72,6 @@ def download_video(
     # Prefer video id for stable filenames (vault-friendly)
     outtmpl = str(output_path / "%(id)s.%(ext)s")
 
-    # Try Python API first
     try:
         return _download_via_api(
             url=url,
@@ -246,7 +244,6 @@ def _resolve_download_result(output_path: Path, info: dict, url: str) -> dict:
         )
 
     sub_files = list(output_path.glob("*.srt")) + list(output_path.glob("*.vtt"))
-    # Prefer subs matching video id
     if vid:
         preferred = [s for s in sub_files if vid in s.name]
         if preferred:
@@ -267,7 +264,6 @@ def fetch_captions(url: str, lang: str = "en") -> Optional[str]:
     """Fetch captions from URL without downloading the video."""
     with tempfile.TemporaryDirectory() as tmpdir:
         out_pattern = os.path.join(tmpdir, "subs")
-        # Try API
         try:
             import yt_dlp
 

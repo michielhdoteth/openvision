@@ -88,7 +88,6 @@ class LocateAnythingProvider:
         Returns:
             List of dicts with keys: x1, y1, x2, y2, label, score.
         """
-        # Encode image to base64 JPEG
         _, buffer = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 90])
         img_b64 = base64.b64encode(buffer).decode("utf-8")
 
@@ -106,12 +105,10 @@ class LocateAnythingProvider:
             resp.raise_for_status()
             data = resp.json()
 
-            # Parse bounding boxes from response
             # Worker API may return boxes in different formats
             raw_boxes = data.get("boxes", data.get("predictions", []))
             boxes = []
             for item in raw_boxes:
-                # Handle both bbox array format and individual coordinates
                 if "bbox" in item and isinstance(item["bbox"], list) and len(item["bbox"]) == 4:
                     x1, y1, x2, y2 = item["bbox"]
                 else:
@@ -161,7 +158,6 @@ class LocateAnythingProvider:
                 "boxes": boxes,
             })
 
-            # Optionally save annotated frame
             if run_dir:
                 try:
                     annotated = self._draw_boxes(image.copy(), boxes)

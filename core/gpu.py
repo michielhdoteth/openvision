@@ -1,11 +1,26 @@
 """GPU memory manager for VRAM-aware operation."""
 import logging
-import torch
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _torch():
+    """Import torch on demand.
+
+    Importing torch costs ~12s and every caller of this module paid it, even
+    commands that only read VRAM through NVML. The torch paths below are
+    fallbacks for machines without NVML.
+    """
+    try:
+        import torch
+        return torch
+    except ImportError:
+        return None
+
+
 # Try to import pynvml for VRAM detection
+pynvml: Any
 try:
     import pynvml
     HAS_PYNVML = True
@@ -40,8 +55,8 @@ def get_vram_info() -> dict:
     }
 
     if not _init_pynvml():
-        # Fallback: try torch CUDA
-        if torch.cuda.is_available():
+        torch = _torch()
+        if torch is not None and torch.cuda.is_available():
             result["total_gb"] = torch.cuda.get_device_properties(0).total_memory / 1e9
             result["free_gb"] = result["total_gb"] - torch.cuda.memory_allocated(0) / 1e9
             result["used_gb"] = result["total_gb"] - result["free_gb"]
@@ -64,7 +79,8 @@ def get_vram_info() -> dict:
 def get_gpu_name() -> str:
     """Get the GPU name string."""
     if not _init_pynvml():
-        if torch.cuda.is_available():
+        torch = _torch()
+        if torch is not None and torch.cuda.is_available():
             return torch.cuda.get_device_properties(0).name
         return "unknown"
 
@@ -96,7 +112,6 @@ def check_safe_mode(config: dict) -> dict:
     }
 
     if vram["total_gb"] == 0:
-        # Can't detect VRAM, be conservative
         result["safe_mode"] = True
         result["reason"] = "Cannot detect VRAM"
         return result
@@ -151,7 +166,8 @@ def unload_model(model_name: Optional[str] = None):
     if model_name:
         logger.info(f"Unloading model: {model_name}")
 
-    if torch.cuda.is_available():
+    torch = _torch()
+    if torch is not None and torch.cuda.is_available():
         torch.cuda.empty_cache()
         logger.info(f"CUDA cache cleared. VRAM free: {get_vram_info()['free_gb']:.1f}GB")
     else:
@@ -185,7 +201,8 @@ def vram_context(config: dict):
 
 def get_device() -> str:
     """Get the best available device (cuda or cpu)."""
-    if torch.cuda.is_available():
+    torch = _torch()
+    if torch is not None and torch.cuda.is_available():
         return "cuda"
     return "cpu"
 

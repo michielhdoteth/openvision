@@ -3,7 +3,20 @@ import cv2
 import numpy as np
 import base64
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
+
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
+
+
+def is_image_file(path: Union[str, Path]) -> bool:
+    """True when the path is a still image rather than a video stream.
+
+    Callers must check this before cv2.VideoCapture(): probing a PNG as video
+    emits decoder errors and can raise, since a still has no frame count or
+    duration to speak of.
+    """
+    return Path(path).suffix.lower() in IMAGE_EXTENSIONS
 
 
 def downscale(image: np.ndarray, max_side: int = 768) -> np.ndarray:

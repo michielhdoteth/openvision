@@ -17,9 +17,6 @@ from storage.paths import get_home
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Model registry
-# ---------------------------------------------------------------------------
 
 @dataclass
 class ModelEntry:
@@ -99,13 +96,24 @@ ALL_MODELS: dict[tuple[str, str], ModelEntry] = {
 ALL_MODELS.update({("whisper", k): v for k, v in WHISPER_MODELS.items()})
 
 
-# ---------------------------------------------------------------------------
-# Cache paths
-# ---------------------------------------------------------------------------
 
-def models_dir() -> Path:
-    """Central model cache directory: ~/.openvision/models/"""
-    d = get_home() / "models"
+def models_dir(config: Optional[dict] = None) -> Path:
+    """Central model cache directory: ~/.openvision/models/
+
+    Overridable via OPENVISION_MODELS_DIR (env) or paths.models (config,
+    absolute or relative to the openvision home).
+    """
+    import os
+    env = os.environ.get("OPENVISION_MODELS_DIR")
+    if env:
+        d = Path(env).expanduser()
+    else:
+        configured = ((config or {}).get("paths") or {}).get("models")
+        if configured:
+            candidate = Path(configured).expanduser()
+            d = candidate if candidate.is_absolute() else get_home(config) / candidate
+        else:
+            d = get_home(config) / "models"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -120,9 +128,94 @@ def whisper_model_dir(model_size: str) -> Path:
     return models_dir() / f"whisper-{model_size}"
 
 
-# ---------------------------------------------------------------------------
-# Status helpers
-# ---------------------------------------------------------------------------
+def repo_local_model_dir(name: str) -> Path:
+    """Repo-local fallback used by dev checkouts: <project>/models/<name>."""
+    return Path(__file__).resolve().parent.parent / "models" / name
+
+
+def _expected_files(provider: str, name: str) -> list[str]:
+    """Files that must exist for a model to count as installed.
+
+    Whisper accepts either the HF-legacy vocabulary.json or the newer
+    vocabulary.txt + tokenizer.json layout (faster-whisper writes the latter).
+    """
+    if provider == "parakeet":
+        return ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"]
+    if provider == "whisper":
+        return ["model.bin", "config.json"]
+    return []
+
+
+def _files_present(provider: str, name: str, directory: Path) -> bool:
+    """True when every required file (or an accepted alternative) is present."""
+    required = _expected_files(provider, name)
+    if not required or not directory.is_dir():
+        return False
+    for f in required:
+        if not (directory / f).exists():
+            return False
+    if provider == "whisper":
+        has_vocab = (directory / "vocabulary.json").exists() or (
+            (directory / "vocabulary.txt").exists() and (directory / "tokenizer.json").exists()
+        )
+        if not has_vocab:
+            return False
+    return True
+
+
+def resolve_model_dir(provider: str, name: str, config: Optional[dict] = None) -> tuple[Path, str]:
+    """Resolve where a model actually lives so runtime, install and status agree.
+
+    Order: explicit config override -> home cache (~/.openvision/models or
+    OPENVISION_MODELS_DIR) -> repo-local dev checkout -> missing (returns the
+    home-cache path as the install target).
+
+    Returns (path, origin) with origin in override|home|repo|missing.
+    """
+    override = ((config or {}).get("models") or {}).get(provider, {}).get("model_dir")
+    if override:
+        candidate = Path(override).expanduser()
+        if _files_present(provider, name, candidate):
+            return candidate, "override"
+    home = models_dir(config) / name
+    if _files_present(provider, name, home):
+        return home, "home"
+    repo = repo_local_model_dir(name)
+    if _files_present(provider, name, repo):
+        return repo, "repo"
+    return home, "missing"
+
+
+def adopt_repo_model(provider: str, name: str, config: Optional[dict] = None) -> Optional[Path]:
+    """Copy a complete repo-local model into the home cache so every project
+    (and a clean reinstall) reuses it. Returns the new path, or None when the
+    model is not duplicated in a repo checkout. Never deletes the source.
+    """
+    path, origin = resolve_model_dir(provider, name, config)
+    if origin != "repo":
+        return None
+    destination = models_dir(config) / name
+    destination.mkdir(parents=True, exist_ok=True)
+    required = _expected_files(provider, name)
+    alternatives = ["vocabulary.txt", "tokenizer.json"] if provider == "whisper" else []
+    for filename in required + alternatives:
+        src = path / filename
+        if src.is_file():
+            shutil.copy2(src, destination / filename)
+    return destination
+
+
+def cleanup_partial_downloads(config: Optional[dict] = None) -> list[Path]:
+    """Remove leftover partial downloads from interrupted installs."""
+    base = models_dir(config)
+    removed: list[Path] = []
+    for pattern in ("*.part", "parakeet-download.tar.bz2"):
+        for stale in base.glob(pattern):
+            stale.unlink(missing_ok=True)
+            removed.append(stale)
+    return removed
+
+
 
 @dataclass
 class ModelStatus:
@@ -135,7 +228,7 @@ class ModelStatus:
     path: Optional[Path] = None
 
 
-def check_model_status(provider: str, name: str) -> ModelStatus:
+def check_model_status(provider: str, name: str, config: Optional[dict] = None) -> ModelStatus:
     """Check if a model is installed and its size on disk."""
     entry = ALL_MODELS.get((provider, name))
     if not entry:
@@ -144,19 +237,17 @@ def check_model_status(provider: str, name: str) -> ModelStatus:
             installed=False, size_bytes=0,
         )
 
-    if provider == "parakeet":
-        model_path = parakeet_model_dir()
-        expected_files = ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"]
-    elif provider == "whisper":
-        model_path = whisper_model_dir(name)
-        expected_files = ["model.bin", "config.json", "vocabulary.json"]
+    if provider in ("parakeet", "whisper"):
+        # Whisper directories are stored as whisper-<size>.
+        dir_name = name if provider == "parakeet" else f"whisper-{name}"
+        model_path, origin = resolve_model_dir(provider, dir_name, config)
     else:
         return ModelStatus(
             name=name, provider=provider, description=entry.description,
             installed=False, size_bytes=0,
         )
 
-    installed = model_path.exists() and all((model_path / f).exists() for f in expected_files)
+    installed = origin != "missing"
 
     if installed and model_path.is_dir():
         size = sum(f.stat().st_size for f in model_path.rglob("*") if f.is_file())
@@ -176,17 +267,12 @@ def check_model_status(provider: str, name: str) -> ModelStatus:
 def list_all_models() -> list[ModelStatus]:
     """Return status of all known models."""
     statuses = []
-    # Parakeet (default)
     statuses.append(check_model_status("parakeet", "parakeet-tdt-0.6b-v3-int8"))
-    # Whisper variants
     for name in WHISPER_MODELS:
         statuses.append(check_model_status("whisper", name))
     return statuses
 
 
-# ---------------------------------------------------------------------------
-# Download helpers
-# ---------------------------------------------------------------------------
 
 def _progress_hook(block_num: int, block_size: int, total_size: int, callback=None):
     """urllib download progress hook."""
@@ -202,23 +288,27 @@ def _progress_hook(block_num: int, block_size: int, total_size: int, callback=No
 
 
 def download_file(url: str, dest: Path, callback=None) -> Path:
-    """Download a file with progress reporting.
+    """Download a file atomically with progress reporting.
 
-    Args:
-        url: URL to download
-        dest: Destination file path
-        callback: Optional (pct, downloaded, total) callback
-
-    Returns:
-        Path to downloaded file
+    Writes to ``<dest>.part`` first and renames on success, so an interrupted
+    download never leaves a file that looks installed. The ``.part`` file is
+    removed on failure (call ``cleanup_partial_downloads`` to sweep older ones).
     """
     logger.info(f"Downloading {url} -> {dest}")
     dest.parent.mkdir(parents=True, exist_ok=True)
+    part_path = dest.with_suffix(dest.suffix + ".part")
 
     def hook(block_num, block_size, total_size):
         _progress_hook(block_num, block_size, total_size, callback)
 
-    urllib.request.urlretrieve(url, str(dest), reporthook=hook)
+    try:
+        urllib.request.urlretrieve(url, str(part_path), reporthook=hook)
+        if not part_path.is_file() or part_path.stat().st_size == 0:
+            raise RuntimeError(f"download produced no data: {url}")
+        part_path.replace(dest)
+    except Exception:
+        part_path.unlink(missing_ok=True)
+        raise
     print()  # newline after progress
     return dest
 
@@ -234,39 +324,41 @@ def download_and_extract_parakeet(callback=None) -> Path:
     """
     target_dir = parakeet_model_dir()
 
-    # Already installed
-    if all((target_dir / f).exists() for f in ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"]):
-        logger.info(f"Parakeet model already installed at {target_dir}")
-        return target_dir
+    # Already installed in the home cache (or a repo checkout — adopt it so
+    # ~/.openvision/models becomes the single cache every caller uses).
+    resolved, origin = resolve_model_dir("parakeet", PARAKEET_MODEL.name)
+    if origin == "home":
+        logger.info(f"Parakeet model already installed at {resolved}")
+        return resolved
+    if origin == "repo":
+        adopted = adopt_repo_model("parakeet", PARAKEET_MODEL.name)
+        if adopted:
+            logger.info(f"Adopted repo-local Parakeet model into {adopted}")
+            return adopted
 
-    # Download tarball
-    url = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20.tar.bz2"
-    tarball_path = models_dir() / "parakeet-download.tar.bz2"
+    # Download tarball (atomic: interrupts leave no fake-installed file)
+    tarball_path = target_dir / "parakeet-download.tar.bz2"
+    url = PARAKEET_MODEL.url
 
     print(f"Downloading Parakeet TDT 0.6B v3 (~350MB compressed)...")
     download_file(url, tarball_path, callback=callback)
 
-    # Extract
     print("Extracting model files...")
     target_dir.mkdir(parents=True, exist_ok=True)
 
     with tarfile.open(str(tarball_path), "r:bz2") as tar:
-        # Find the model files in the tarball
         members = tar.getmembers()
         for member in members:
             # The tarball has a nested directory structure; we want specific files
             basename = member.name.split("/")[-1]
             if basename in ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"]:
-                # Extract to our target dir with just the filename
                 member.name = basename
                 tar.extract(member, str(target_dir))
 
-    # Verify
     for f in ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"]:
         if not (target_dir / f).exists():
             raise RuntimeError(f"Extraction failed: {f} not found in {target_dir}")
 
-    # Clean up tarball
     tarball_path.unlink(missing_ok=True)
     print(f"Parakeet model installed to {target_dir}")
     return target_dir
@@ -285,12 +377,18 @@ def download_whisper_model(model_size: str, callback=None) -> Path:
 
     target_dir = whisper_model_dir(model_size)
 
-    # Already installed
-    if all((target_dir / f).exists() for f in ["model.bin", "config.json", "vocabulary.json"]):
-        logger.info(f"Whisper {model_size} already installed at {target_dir}")
-        return target_dir
+    # Already installed anywhere on the resolution chain (home cache or repo
+    # checkout) — accept the faster-whisper vocabulary.txt+tokenizer.json
+    # layout so a complete download is never fetched twice.
+    resolved, origin = resolve_model_dir("whisper", f"whisper-{model_size}")
+    if origin in ("home", "repo", "override"):
+        if origin == "repo":
+            adopted = adopt_repo_model("whisper", f"whisper-{model_size}")
+            if adopted:
+                return adopted
+        logger.info(f"Whisper {model_size} already installed at {resolved}")
+        return resolved
 
-    # Use faster-whisper's download mechanism
     try:
         from faster_whisper import download_model
         print(f"Downloading Whisper {model_size} via faster-whisper...")

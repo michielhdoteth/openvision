@@ -27,13 +27,11 @@ def probe_cmd(
     """
     global console
     console = Console(stderr=json_output or jsonl)
-    # Validate file exists
     video_path = Path(path)
     if not video_path.exists():
         console.print(f"[red]Error:[/red] File not found: {path}")
         raise typer.Exit(code=1)
     
-    # Probe the video
     try:
         metadata = probe(str(video_path))
     except Exception as e:
@@ -51,7 +49,6 @@ def probe_cmd(
         metadata["vfr_ratio"] = vfr_info.get("vfr_ratio", 0.0)
         metadata["color_range"] = color_info.get("range_type", "unknown")
     
-    # Estimate processing cost
     cost = estimate_processing_cost(metadata)
     metadata["estimated_processing_cost"] = cost
     
@@ -82,7 +79,6 @@ def _display_probe_table(result: ProbeResult, path: str, deep: bool = False):
     table.add_row("Codec", result.codec)
     table.add_row("Frame Count", str(result.frame_count))
 
-    # VFR info
     vfr_mode = getattr(result, "vfr_mode", "unknown")
     if vfr_mode != "unknown":
         vfr_color = "yellow" if vfr_mode == "vfr" else "green"
@@ -93,7 +89,6 @@ def _display_probe_table(result: ProbeResult, path: str, deep: bool = False):
             v_const = getattr(result, "vfr_constant_frames", 0)
             table.add_row("VFR Analysis", f"{v_var} variable / {v_const} constant ({vfr_ratio:.1%} VFR)")
 
-    # Color range
     color_range = getattr(result, "color_range", "unknown")
     if color_range != "unknown":
         table.add_row("Color Range", color_range)
@@ -103,12 +98,10 @@ def _display_probe_table(result: ProbeResult, path: str, deep: bool = False):
     
     console.print(table)
     
-    # Color-coded cost warning
     cost_colors = {"low": "green", "medium": "yellow", "high": "red"}
     color = cost_colors.get(result.estimated_processing_cost, "white")
     console.print(f"\nEstimated processing cost: [{color}]{result.estimated_processing_cost.upper()}[/{color}]")
 
-    # VFR optimization tips
     if vfr_mode == "vfr":
         console.print("\n[yellow]VFR detected![/yellow] Frame timestamps may be irregular.")
         console.print("[dim]Tip: Open Vision uses ffmpeg timestamp-based extraction for VFR videos.[/dim]")

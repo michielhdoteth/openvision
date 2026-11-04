@@ -7,12 +7,23 @@ extend this and just configure base_url, model name, and auth headers.
 """
 from typing import Optional
 import base64
+import re
 
 import httpx
 import numpy as np
 
 from providers.base import VlmProvider, VlmResponse, TokenUsage
 from core.image import encode_base64
+
+
+# Error text a text-only model produces when given image input. These arrive
+# as HTTP 4xx/5xx from llama.cpp-style servers started without a multimodal
+# projector, or from chat-only hosted models.
+_IMAGE_REJECTED = re.compile(
+    r"image input is not supported|failed to (load|format) image|"
+    r"images? (are|is) not supported|does not support (image|vision|multimodal)",
+    re.IGNORECASE,
+)
 
 
 class OpenAICompatProvider(VlmProvider):
@@ -46,10 +57,8 @@ class OpenAICompatProvider(VlmProvider):
             timeout=self.timeout,
             headers=self._extra_headers,
         )
+        self._image_support_cache: dict = {}
 
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     @staticmethod
     def _parse_usage(data: dict) -> TokenUsage:
@@ -63,13 +72,13 @@ class OpenAICompatProvider(VlmProvider):
             total_tokens=usage.get("total_tokens", 0),
         )
 
-    def _chat_completion(self, messages: list[dict]) -> dict:
+    def _chat_completion(self, messages: list[dict], max_tokens: Optional[int] = None) -> dict:
         """Send a chat completion request. Returns raw response dict."""
         payload = {
             "model": self.model_name,
             "messages": messages,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "max_tokens": self.max_tokens if max_tokens is None else max_tokens,
         }
         response = self._client.post(
             f"{self.base_url}/chat/completions",
@@ -110,9 +119,6 @@ class OpenAICompatProvider(VlmProvider):
                 tokens=TokenUsage(),
             )
 
-    # ------------------------------------------------------------------
-    # Public API
-    # ------------------------------------------------------------------
 
     def describe_image(
         self, image: np.ndarray, question: Optional[str] = None
@@ -148,10 +154,44 @@ class OpenAICompatProvider(VlmProvider):
 
         try:
             data = self._chat_completion(messages)
-            content = data["choices"][0]["message"]["content"].strip()
+            message = data["choices"][0]["message"]
             tokens = self._parse_usage(data)
+
+            # Reasoning models spend the budget thinking and can finish with an
+            # empty content. Read content first, always; only fall back when it
+            # is genuinely empty AND reasoning explains why.
+            content = (message.get("content") or "").strip()
+            if not content and \
+                    (message.get("reasoning_content") or "").strip() and \
+                    data["choices"][0].get("finish_reason") == "length":
+                retry = self._chat_completion(messages, max_tokens=self.max_tokens + 1024)
+                choice = retry["choices"][0]
+                message = choice["message"]
+                tokens = self._parse_usage(retry)
+                content = (message.get("content") or "").strip()
+                if not content:
+                    spent = retry.get("usage", {}).get(
+                        "completion_tokens_details", {}).get("reasoning_tokens", "the")
+                    return VlmResponse(
+                        content=(
+                            f"Model {self.model_name} spent {spent} token budget on "
+                            f"reasoning and produced no answer. Raise --max-tokens "
+                            f"or load a non-thinking model."
+                        ),
+                        tokens=tokens,
+                    )
             return VlmResponse(content=content, tokens=tokens)
         except Exception as exc:
+            if self._image_rejected(exc):
+                return VlmResponse(
+                    content=(
+                        f"Model {self.model_name} at {self.base_url} does not accept "
+                        f"image input. Load a vision-capable model with its projector "
+                        f"(mmproj), or run with --raw-frames so a vision-capable agent "
+                        f"can read the frames."
+                    ),
+                    tokens=TokenUsage(),
+                )
             return self._error_response(exc, self.PROVIDER_NAME)
 
     def describe_frames(
@@ -196,6 +236,71 @@ class OpenAICompatProvider(VlmProvider):
         except Exception:
             return False
 
+    def supports_images(self) -> bool:
+        """Detect image support from the model listing, probing if undeclared.
+
+        llama.cpp-style listings (LM Studio) do not report input modalities,
+        so a 1x1 pixel is sent and the answer is cached per provider+model.
+        A declared "text"-only capability short-circuits without a round trip.
+        """
+        cache_key = (self.base_url, self.model_name)
+        if cache_key in self._image_support_cache:
+            return self._image_support_cache[cache_key]
+
+        supported = self._detect_image_support()
+        self._image_support_cache[cache_key] = supported
+        return supported
+
+    def _detect_image_support(self) -> bool:
+        try:
+            response = self._client.get(f"{self.base_url}/models", timeout=5)
+            if response.status_code == 200:
+                for model in response.json().get("data", []):
+                    if model.get("id") != self.model_name:
+                        continue
+                    modalities = (model.get("architecture") or {}).get("input_modalities")
+                    if modalities:
+                        return "image" in modalities or "vision" in modalities
+        except Exception:
+            pass
+
+        # Undeclared modalities: ask the model with one invisible pixel. A
+        # rejection means the model or its server has no image path.
+        try:
+            probe = np.zeros((1, 1, 3), dtype=np.uint8)
+            response = self._client.post(
+                f"{self.base_url}/chat/completions",
+                json={
+                    "model": self.model_name,
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "ok"},
+                            {"type": "image_url", "image_url": {"url": encode_base64(probe, ".png")}},
+                        ],
+                    }],
+                    "max_tokens": 1,
+                    "temperature": 0,
+                },
+                timeout=30,
+            )
+            # llama.cpp-style servers may answer 200 with an error body; treat
+            # any non-2xx or an image-rejection message as "no image support".
+            if response.status_code >= 400:
+                return False
+            if _IMAGE_REJECTED.search(response.text or ""):
+                return False
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _image_rejected(exc: Exception) -> bool:
+        """True when an error looks like the model refusing image input."""
+        if isinstance(exc, httpx.HTTPStatusError):
+            return bool(_IMAGE_REJECTED.search(exc.response.text or ""))
+        return bool(_IMAGE_REJECTED.search(str(exc)))
+
     def list_models(self) -> list[str]:
         """List available models from the provider."""
         try:
@@ -206,9 +311,6 @@ class OpenAICompatProvider(VlmProvider):
         except Exception:
             return []
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
 
     def close(self) -> None:
         """Close the underlying HTTP client."""

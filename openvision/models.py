@@ -48,6 +48,9 @@ class ObserveResult(BaseModel):
     segmentation: Optional[dict] = None
     stages: dict[str, dict] = Field(default_factory=dict)
     duration_seconds: float = 0.0
+    # How much of the source the sampled frames span. Reported on every run so an
+    # undersampled long video can never read as a complete analysis.
+    sampling: Optional[dict] = None
 
 
 class TranscribeResult(BaseModel):

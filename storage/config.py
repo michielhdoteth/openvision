@@ -23,7 +23,6 @@ def find_config() -> Path:
     if user_config.is_file():
         return user_config
 
-    # Package-relative
     pkg_config = Path(__file__).parent.parent / "config" / "default.yaml"
     if pkg_config.exists():
         return pkg_config
@@ -75,7 +74,6 @@ def get_mode_config(config: dict, mode: str) -> dict:
     if mode in modes:
         return modes[mode]
 
-    # Fall back to defaults
     defaults = config.get("defaults", {})
     return {
         "resolution": defaults.get("max_resolution", 768),

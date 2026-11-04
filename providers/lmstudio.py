@@ -16,7 +16,6 @@ class LmStudioProvider(OpenAICompatProvider):
     PROVIDER_NAME = "lmstudio"
 
     def __init__(self, config: dict):
-        # LM Studio defaults
         config.setdefault("base_url", "http://localhost:1234/v1")
         config.setdefault("api_key", "not-needed")
         super().__init__(config)

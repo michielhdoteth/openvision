@@ -47,7 +47,6 @@ class TestCreateContactSheet:
     def test_output_is_jpeg(self, sample_frames, tmp_path):
         out = str(tmp_path / "sheet.jpg")
         result = create_contact_sheet(sample_frames, output_path=out)
-        # Read first bytes to verify JPEG magic
         with open(result, "rb") as f:
             magic = f.read(2)
         assert magic == b'\xff\xd8'

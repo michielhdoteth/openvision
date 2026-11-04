@@ -7,7 +7,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# OpenCV 5 engine constants
 ENGINE_AUTO = 3   # Try new engine first, fallback to classic
 ENGINE_NEW = 2    # New graph engine (CPU, 80%+ ONNX)
 ENGINE_CLASSIC = 1  # Old 4.x engine (supports CUDA/OpenVINO)
@@ -56,7 +55,6 @@ class OpenCVDNNProvider:
 
         engine_id = self._get_engine()
 
-        # Try loading with selected engine
         try:
             net = cv2.dnn.readNetFromONNX(str(model), engine=engine_id)
         except Exception as e:
@@ -66,7 +64,6 @@ class OpenCVDNNProvider:
             else:
                 raise
 
-        # Set backend/target based on device
         if self.device == "cuda" and cv2.cuda.getCudaEnabledDeviceCount() > 0:
             net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
             net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
@@ -94,7 +91,6 @@ class OpenCVDNNProvider:
 
         net = self._nets[model_key]
 
-        # Auto-detect input blob format
         if input_data.ndim == 4:
             blob = input_data
         else:
@@ -119,14 +115,12 @@ class OpenCVDNNProvider:
         """
         h, w = image.shape[:2]
 
-        # YOLO expects 640x640 input
         blob = cv2.dnn.blobFromImage(image, 1.0 / 255.0, (640, 640), swapRB=True, crop=False)
 
         net = self._nets[model_key]
         net.setInput(blob)
         outputs = net.forward(net.getUnconnectedOutLayersNames())
 
-        # Parse YOLO output (NMS)
         boxes = []
         confidences = []
         class_ids = []
@@ -150,7 +144,6 @@ class OpenCVDNNProvider:
                 confidences.append(confidence)
                 class_ids.append(class_id)
 
-        # Apply NMS
         indices = cv2.dnn.NMSBoxes(boxes, confidences, conf_threshold, nms_threshold)
 
         results = []

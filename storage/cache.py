@@ -93,7 +93,6 @@ class RunCache:
         conn.commit()
         conn.close()
 
-        # Auto-import legacy JSON runs
         self._import_legacy_json_runs()
 
     def _conn(self) -> sqlite3.Connection:
@@ -136,12 +135,10 @@ class RunCache:
         run_dir = self.base_dir / dir_name
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create subdirectories
         (run_dir / "frames").mkdir(exist_ok=True)
         (run_dir / "thumbnails").mkdir(exist_ok=True)
         (run_dir / "masks").mkdir(exist_ok=True)
 
-        # Register in database
         conn = self._conn()
         conn.execute(
             "INSERT INTO runs (cache_key, dir_name, dir_path, created_at, metadata_json) VALUES (?, ?, ?, ?, ?)",
@@ -241,7 +238,6 @@ class RunCache:
         conn = self._conn()
         like_q = f"%{query}%"
 
-        # Search artifacts
         rows = conn.execute("""
             SELECT DISTINCT r.dir_name, r.dir_path, r.created_at, r.metadata_json, 'artifact' as source
             FROM runs r
@@ -250,7 +246,6 @@ class RunCache:
             ORDER BY r.created_at DESC LIMIT ?
         """, (like_q, like_q, limit)).fetchall()
 
-        # Search transcripts
         rows2 = conn.execute("""
             SELECT DISTINCT r.dir_name, r.dir_path, r.created_at, r.metadata_json, 'transcript' as source
             FROM runs r
@@ -326,7 +321,6 @@ class RunCache:
             if cache_key in existing_keys:
                 continue
 
-            # Import
             try:
                 meta = json.loads(meta_path.read_text())
             except Exception:

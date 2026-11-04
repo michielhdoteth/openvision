@@ -33,11 +33,9 @@ class OpenVisionError(Exception):
         return result
 
 
-# Deprecation alias for backward compatibility
 OphanimError = OpenVisionError
 
 
-# Specific error types
 
 class VideoNotFoundError(OpenVisionError):
     def __init__(self, path: str):
@@ -152,7 +150,6 @@ def handle_cli_error(e: Exception) -> dict:
     if isinstance(e, OpenVisionError):
         return e.to_dict()
 
-    # Map common exceptions
     for exc_type, code in ERROR_CODES.items():
         if isinstance(e, exc_type):
             return {
@@ -160,7 +157,6 @@ def handle_cli_error(e: Exception) -> dict:
                 "message": str(e),
             }
 
-    # Generic fallback
     return {
         "error": "UNEXPECTED_ERROR",
         "message": str(e),

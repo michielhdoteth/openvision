@@ -58,7 +58,6 @@ class TestExtractAudio:
         assert Path(result).exists()
         assert Path(result).stat().st_size > 0
 
-        # Check it's actually a WAV
         with open(result, "rb") as f:
             header = f.read(4)
             assert header == b"RIFF"

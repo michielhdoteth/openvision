@@ -2,9 +2,7 @@
 
 ![Open Vision - local vision for AI agents](.github/banner.png)
 
-**Give shell-capable AI agents eyes, ears, and time-grounded video memory.**
-
-Open Vision is an agent perception layer for video. Give it a local video or URL, and it returns visual and audio evidence as JSON, JSONL, and files your agent can use. A vision-capable agent can inspect handed-off frames itself; otherwise, Open Vision can analyze them with a configured vision model.
+Open Vision is a local-first video and image analysis CLI for AI agents. Give it a video file, URL, or still image to extract frames, transcribe audio, and return timestamped evidence as JSON, JSONL, and files. Vision-capable agents can inspect the frames directly; other agents can use results from a configured vision model. Transcripts are persisted to a local SQLite index and become searchable for their video.
 
 The flow is simple: **video or URL → Open Vision → visual and audio evidence → JSON, JSONL, and files → agent.** The CLI works with any agent that can run a command and consume its output. No framework-specific SDK is required.
 
@@ -12,8 +10,11 @@ Open Vision is local-first. Local video, local models, and the local SQLite inde
 
 ```
 openvision observe video.mp4
+openvision observe screenshot.png
 openvision ask video.mp4 "what color is the car?"
+openvision ask screenshot.png "what text is on this form?"
 openvision transcribe video.mp4
+openvision ask video.mp4 "is there a person?" --decision noul
 ```
 
 ## For Agents
@@ -42,7 +43,7 @@ Open Vision analyzes the sampled frames with a configured vision model and retur
 
 ### Video memory for agents
 
-Open Vision can turn separate observations into a persistent, searchable timeline. Successful `observe` runs index available evidence in a local SQLite database. Agents can search across videos, inspect a video's time hierarchy, or ask a question about one source and have retrieved intervals checked against stored evidence frames.
+Open Vision can turn separate observations into a persistent, searchable timeline. Successful `observe` runs index available evidence in a local SQLite database. `transcribe` runs are also persisted and merged into the same index, so speech becomes searchable alongside visual evidence. Agents can search across videos, inspect a video's time hierarchy, or ask a question about one source and have retrieved intervals checked against stored evidence frames.
 
 This gives agents a way to return to specific moments across long recordings and multiple videos, instead of relying on a single summary or reprocessing the source from scratch. Speech, visual notes, speakers, and frame or mask references remain distinct and time-grounded. Speaker labels are associated with nearby visual events by time; they do not identify a visible person.
 
@@ -83,6 +84,9 @@ openvision observe video.mp4
 # Ask a specific question
 openvision ask video.mp4 "is there a dog in this video?"
 
+# Typed decision (cheaper, returns probability)
+openvision ask video.mp4 "is there a dog?" --decision noul --provider clef
+
 # Transcribe with speaker labels
 openvision transcribe video.mp4 --diarize
 
@@ -92,13 +96,11 @@ openvision observe "https://youtube.com/watch?v=..."
 
 ## What It Does
 
-**Observe:** Extracts keyframes from video, analyzes each with a vision model, and builds a cross-modal timeline (visual + audio). Returns a structured summary.
+**Observe:** Extracts keyframes from video or analyzes a still image, runs a vision model, and builds a cross-modal timeline (visual + audio). Returns a structured summary. Use `observe --read-text` to ask the VLM to quote clearly legible text.
 
-Use `observe --read-text` to ask the VLM to quote clearly legible text in sampled frames. This is VLM-based reading, not a separate OCR engine; uncertain or obscured text should remain marked as uncertain.
+**Ask:** Targeted question about video or image content. "What color is the car?" returns a direct answer with evidence frames. Use `--decision noul|choice|score` for typed answers (probabilities instead of prose) — cheaper and faster for classification. Decision models include Luna (OpenAI/OpenRouter), Clef, Clef Flash, Clef Omni, Jev (OpenRouter), and Jev via OpenCode Zen (text-only, free). Select with `--provider clef`, `--provider jev`, `--provider zen`, or `--provider luna-decisions`.
 
-**Ask:** Targeted question about video content. "What color is the car?" returns a direct answer with evidence frames.
-
-**Transcribe:** Speech-to-text using Parakeet (default, fast, runs on CPU) or Whisper. Supports speaker diarization.
+**Transcribe:** Speech-to-text using Parakeet (default, fast, runs on CPU) or Whisper. Supports speaker diarization. Every run is persisted to the local SQLite index and becomes searchable for its video.
 
 **Segment:** Text-prompt object segmentation. "person" returns masked regions with bounding boxes.
 
@@ -133,10 +135,11 @@ Raw-frame mode is an agent handoff: its transcript can be indexed, but its image
 
 | Feature | Command |
 |---------|---------|
-| Visual analysis | `observe video.mp4` |
-| Targeted Q&A | `ask video.mp4 "question"` |
+| Visual analysis | `observe video.mp4` or `observe image.png` |
+| Targeted Q&A | `ask video.mp4 "question"` or `ask image.png "question"` |
+| Typed decisions (noul/choice/score) | `ask video.mp4 "question" --decision noul --provider clef` |
 | Read visible text with the VLM | `observe video.mp4 --read-text` |
-| Speech-to-text | `transcribe video.mp4` |
+| Speech-to-text (persisted) | `transcribe video.mp4` |
 | Speaker labels | `transcribe video.mp4 --diarize` |
 | Automatic memory indexing | `observe video.mp4` |
 | Higher-coverage long-video memory | `observe video.mp4 --memory` |
@@ -168,18 +171,23 @@ The automated tests exercise both machine-output protocols and check that JSONL 
 
 Open Vision auto-detects what's running. No config needed.
 
-**Vision models:** LM Studio, Ollama, llama.cpp, OpenAI, Groq, Together AI, vLLM
+**Vision models:** LM Studio, llama.cpp, Gemini (video-capable), OpenAI, Groq, Together AI, vLLM. Auto-detects what's running — no port or URL configuration needed. For a non-standard port, set `models.vlm.<provider>.base_url` once in `~/.openvision/config.yaml`.
 
-**Speech-to-text:** Parakeet TDT 0.6B v3 (default, INT8, ~640MB, CPU), Whisper (optional)
+**Decision models:** Luna (OpenAI/OpenRouter), Clef, Clef Flash, Clef Omni, Jev (OpenRouter), Jev via OpenCode Zen (text-only, free). Typed answers (noul/choice/score) return probabilities instead of prose — cheaper and faster for classification. Use `--provider clef`, `--provider jev`, `--provider zen`, or `--provider luna-decisions`. Zen is text-only (frames rejected with `DECISION_TEXT_ONLY`).
 
-**Hardware:** Works on CPU. GPU (CUDA) is faster for VLM inference. Parakeet runs efficiently on CPU.
+**Speech-to-text:** Parakeet TDT 0.6B v3 (default, INT8, ~640MB, CPU), Whisper (optional). Every transcript is persisted to the local SQLite index and becomes searchable.
+
+**Hardware:** Works on CPU. GPU (CUDA) is faster for VLM inference. Parakeet runs efficiently on CPU. Text-only models are detected before inference and fail fast with an actionable message.
 
 ## Configuration
 
-Defaults work out of the box. Customize via `config/default.yaml` or environment variables:
+Defaults work out of the box. Customize via `~/.openvision/config.yaml` or environment variables:
 
 ```bash
 export OPENVISION_CONFIG=my_config.yaml
+export OPENVISION_HOME=/path/to/data
+export OPENVISION_VLM_BASE_URL=http://127.0.0.1:9999/v1
+export OPENVISION_VLM_MODEL=google/gemma-4-e2b
 ```
 
 Three processing modes:

@@ -87,7 +87,6 @@ def _probe_ffprobe(path: str) -> dict:
     }
 
     try:
-        # Get pixel format and color info
         cmd = [
             "ffprobe", "-v", "error",
             "-show_entries", "stream=codec_type,codec_name,pix_fmt,color_range,color_space,color_transfer,color_primaries,width,height,avg_frame_rate,nb_frames:format=bit_rate,duration",
@@ -100,13 +99,11 @@ def _probe_ffprobe(path: str) -> dict:
 
         data = json.loads(proc.stdout)
 
-        # Check for audio stream
         streams = data.get("streams", [])
         for s in streams:
             if s.get("codec_type") == "audio":
                 result["has_audio"] = True
 
-        # Get video stream info
         for s in streams:
             if s.get("codec_type") == "video":
                 result["has_video"] = True
@@ -158,7 +155,6 @@ def detect_vfr(path: str) -> dict:
     }
 
     try:
-        # Run vfrdet filter - outputs to stderr
         cmd = [
             "ffmpeg", "-i", path,
             "-vf", "vfrdet",
@@ -166,12 +162,10 @@ def detect_vfr(path: str) -> dict:
         ]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
-        # Parse vfrdet output from stderr
         # Format: [Parsed_vfrdet_0 @ ...] VFR detect: N frames ... V:count ... C:count ...
         for line in proc.stderr.split("\n"):
             if "vfrdet" in line and ("V:" in line or "C:" in line):
                 import re
-                # Extract V: and C: counts
                 v_match = re.search(r'V:(\d+)', line)
                 c_match = re.search(r'C:(\d+)', line)
                 if v_match and c_match:
@@ -218,7 +212,6 @@ def detect_color_range(path: str) -> dict:
         for line in proc.stderr.split("\n"):
             if "colordetect" in line:
                 import re
-                # Parse Y range
                 y_match = re.search(r'Y:(\d+)\s*->\s*(\d+)', line)
                 if y_match:
                     y_low = int(y_match.group(1))
@@ -238,9 +231,6 @@ def detect_color_range(path: str) -> dict:
     return result
 
 
-# ---------------------------------------------------------------------------
-# FFmpeg 9.0 CUDA transpose support
-# ---------------------------------------------------------------------------
 
 _cuda_transpose_available: bool | None = None
 
@@ -284,14 +274,12 @@ def _detect_orientation(path: str) -> int:
         import json
         data = json.loads(proc.stdout)
 
-        # Check side_data for rotation
         for stream in data.get("streams", []):
             for sd in stream.get("side_data_list", []):
                 rot = sd.get("rotation")
                 if rot is not None:
                     return abs(int(float(rot)))
 
-            # Check tags
             tags = stream.get("tags", {})
             rotate = tags.get("rotate") or tags.get("tags.rotate")
             if rotate is not None:
@@ -370,7 +358,6 @@ def extract_frames(
     Returns:
         List of dicts: {index, timestamp, timestamp_str, image (np.ndarray)}
     """
-    # Auto-detect VFR if not specified
     if vfr_mode == "unknown":
         vfr_info = detect_vfr(path)
         vfr_mode = vfr_info.get("mode", "cfr")
@@ -379,7 +366,6 @@ def extract_frames(
     if vfr_mode == "vfr":
         return _extract_frames_vfr(path, fps, max_frames, max_resolution)
 
-    # Standard CFR extraction via OpenCV
     cap = cv2.VideoCapture(path)
     if not cap.isOpened():
         raise FileNotFoundError(f"Cannot open video file: {path}")
@@ -390,14 +376,12 @@ def extract_frames(
     if video_fps <= 0:
         video_fps = 30.0
 
-    # Calculate stride that evenly samples across the ENTIRE video duration
     # This prevents only sampling the first N frames of a long video
     fps_interval = int(video_fps / fps) if fps > 0 else 1
     fps_interval = max(1, fps_interval)
     total_at_fps = total_frames // fps_interval
 
     if total_at_fps > max_frames:
-        # Spread max_frames evenly across the full video
         stride = max(1, total_frames // max_frames)
     else:
         stride = fps_interval
@@ -417,7 +401,6 @@ def extract_frames(
         timestamp = frame_idx / video_fps
         timestamp_str = _format_timestamp(timestamp)
 
-        # Downscale
         image = _downscale(image, max_resolution)
 
         frames.append({
@@ -453,11 +436,9 @@ def _extract_frames_vfr(
     meta = probe(path)
     duration = meta["duration_seconds"]
 
-    # Calculate target fps to stay within frame budget
     target_fps = min(fps, max_frames / max(1, duration))
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Build filter chain with optional CUDA transpose for rotated videos
         rotation = _detect_orientation(path)
         transpose_filter = _get_transpose_filter(rotation, use_cuda=True)
 
@@ -478,7 +459,6 @@ def _extract_frames_vfr(
                 cmd_with_info, capture_output=True, text=True, timeout=600,
             )
         except subprocess.TimeoutExpired:
-            # Fallback: simpler command without transpose
             fallback_cmd = [
                 "ffmpeg", "-i", str(video),
                 "-vf", f"fps={target_fps:.4f}",
@@ -487,7 +467,6 @@ def _extract_frames_vfr(
             ]
             subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=600)
 
-        # Parse timestamps from showinfo
         timestamps = []
         for line in result.stderr.split("\n"):
             if "showinfo" in line and "pts_time:" in line:
@@ -497,7 +476,6 @@ def _extract_frames_vfr(
                 except (IndexError, ValueError):
                     continue
 
-        # Read extracted frames
         frames = []
         frame_files = sorted(Path(tmpdir).glob("frame_*.jpg"))
 
@@ -509,7 +487,6 @@ def _extract_frames_vfr(
                 continue
             img = _downscale(img, max_resolution)
 
-            # Use parsed timestamp or fallback to estimation
             if i < len(timestamps):
                 ts = timestamps[i]
             else:
@@ -648,9 +625,7 @@ def estimate_processing_cost(metadata: dict, mode: str = "balanced") -> str:
         return "high"
 
 
-# ---------------------------------------------------------------------------
 # ffmpeg-based extraction (for large/long videos where OpenCV is too slow)
-# ---------------------------------------------------------------------------
 
 def extract_scene_frames_ffmpeg(
     path: str,
@@ -677,7 +652,6 @@ def extract_scene_frames_ffmpeg(
         raise FileNotFoundError(f"Video not found: {path}")
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Use ffmpeg scene detection with select filter
         cmd = [
             "ffmpeg", "-i", str(video),
             "-vf", f"select='gt(scene,{threshold})',showinfo",
@@ -692,7 +666,6 @@ def extract_scene_frames_ffmpeg(
         except subprocess.TimeoutExpired:
             raise RuntimeError("ffmpeg scene detection timed out (10 min)")
 
-        # Parse showinfo output to get timestamps
         timestamps = []
         for line in result.stderr.split("\n"):
             if "showinfo" in line and "pts_time:" in line:
@@ -702,7 +675,6 @@ def extract_scene_frames_ffmpeg(
                 except (IndexError, ValueError):
                     continue
 
-        # Read extracted frames
         frames = []
         frame_files = sorted(Path(tmpdir).glob("frame_*.jpg"))
 
@@ -739,7 +711,6 @@ def extract_keyframes_ffmpeg(
     if not video.exists():
         raise FileNotFoundError(f"Video not found: {path}")
 
-    # Get video fps for timestamp calculation
     meta = probe(path)
     video_fps = meta.get("fps", 30.0)
 
@@ -763,7 +734,6 @@ def extract_keyframes_ffmpeg(
             if img is None:
                 continue
             img = _downscale(img, max_resolution)
-            # Estimate timestamp from frame index (approximate)
             ts = i * (meta["duration_seconds"] / max(1, len(list(Path(tmpdir).glob("keyframe_*.jpg")))))
             frames.append({
                 "index": i,
@@ -840,7 +810,6 @@ def dedupe_frames_sliding(
     for frame in frames[1:]:
         thumb = _make_thumbnail(frame["image"])
 
-        # Compare against last N kept frames
         is_duplicate = False
         for prev_thumb in thumbnails[-window:]:
             diff = np.mean(np.abs(prev_thumb.astype(float) - thumb.astype(float)))

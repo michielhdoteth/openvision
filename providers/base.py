@@ -23,11 +23,14 @@ class VlmResponse:
 
 
 class VlmProvider(ABC):
-    """Abstract base for all VLM providers (LM Studio, Ollama, etc.).
+    """Abstract base for all VLM providers (LM Studio, llama.cpp, Gemini, etc.).
 
     Subclasses must implement describe_image, describe_frames, and check_health.
     The constructor receives a config dict with at minimum a "model" key.
     """
+
+    kind = "chat"                  # "chat" | "decision"
+    media = ("text", "image")      # add "video" for whole-video providers
 
     def __init__(self, config: dict):
         self.config = config
@@ -91,6 +94,16 @@ class VlmProvider(ABC):
             True if the provider is reachable and ready, False otherwise.
         """
         ...
+
+    def supports_images(self) -> bool:
+        """Whether the configured model can accept image input.
+
+        Defaults to True for chat providers that declare "image" in their
+        media contract. Providers that can cheaply detect a text-only model
+        should override this so a mid-run HTTP 500 becomes an actionable
+        error instead of text injected into an observation.
+        """
+        return "image" in self.media
 
     @abstractmethod
     def close(self) -> None:

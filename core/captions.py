@@ -61,7 +61,6 @@ def parse_vtt(content: str) -> list[CaptionSegment]:
         lines = block.strip().split('\n')
 
         for i, line in enumerate(lines):
-            # Try full timestamp format
             m = timestamp_pattern.search(line)
             if m:
                 start = _ts_to_seconds(int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4)))
@@ -80,7 +79,6 @@ def parse_vtt(content: str) -> list[CaptionSegment]:
                     segments.append(CaptionSegment(start=start, end=end, text=text))
                 continue
 
-            # Try short timestamp format
             m = timestamp_pattern_short.search(line)
             if m:
                 start = _ts_to_seconds(0, int(m.group(1)), int(m.group(2)), int(m.group(3)))
@@ -96,7 +94,6 @@ def parse_vtt(content: str) -> list[CaptionSegment]:
                 if text:
                     segments.append(CaptionSegment(start=start, end=end, text=text))
 
-    # Deduplicate YouTube auto-subs
     segments = _dedupe(segments)
 
     return segments
@@ -123,7 +120,6 @@ def _dedupe(segments: list[CaptionSegment]) -> list[CaptionSegment]:
         # If this segment's text is a substring of the previous (or vice versa),
         # and they overlap in time, skip it
         if (seg.text in prev.text or prev.text in seg.text) and seg.start < prev.end + 0.5:
-            # Keep the longer text
             if len(seg.text) > len(prev.text):
                 result[-1] = seg
         else:

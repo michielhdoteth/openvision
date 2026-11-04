@@ -1,6 +1,7 @@
 """Search and inspect OpenVision's local, timestamped video memories."""
 import json
 from pathlib import Path
+from typing import Optional
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -101,12 +102,23 @@ def ask_cmd(
         return
 
     config = load_config()
-    vlm_config = dict(config.get("models", {}).get("vlm", {}))
+    # Decision tier (falls back to the observe-time VLM when unconfigured) so
+    # verification questions run on the cheap/on-device backend by default.
+    vlm_config = dict(config.get("models", {}).get("decision")
+                      or config.get("models", {}).get("vlm", {}))
     if provider_name:
         vlm_config["provider"] = provider_name
     from providers.registry import ProviderRegistry
     try:
         provider = ProviderRegistry.create(vlm_config)
+        if getattr(provider, "kind", "chat") != "chat":
+            provider.close()
+            raise RuntimeError(
+                "models.decision points at a typed decision model, which returns "
+                "probabilities instead of text. Set models.decision.provider to a "
+                "chat provider (llamacpp, gemini, ...) and use `ask --decision` "
+                "for typed answers."
+            )
         if not provider.check_health():
             provider.close()
             raise RuntimeError("selected vision-language provider is not reachable")
@@ -158,6 +170,108 @@ def ask_cmd(
         answer = "Retrieved intervals did not yield a reliable model response; inspect the evidence or replay the source video."
         confidence = "low"
     _emit_result({"answer": answer, "confidence": confidence, "evidence": checked}, json_output)
+
+
+@app.command("import")
+def import_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+):
+    """Index saved observation runs into video memory (no re-analysis).
+
+    Walks the local run cache, and for every recorded run whose source video
+    still exists on disk, rebuilds its memory hierarchy from the saved
+    artifacts — transcripts are parsed with HH:MM:SS support.
+    """
+    global console
+    console = Console(stderr=json_output)
+    from storage.paths import run_cache_dir
+    from cli.commands.observe import _parse_transcript_txt
+
+    runs_path = run_cache_dir(load_config())
+    summary = {"imported": 0, "skipped": 0, "sources": []}
+    for run_dir in sorted(p for p in runs_path.glob("*") if p.is_dir()):
+        artifact = run_dir / "observations.json"
+        if not artifact.is_file():
+            summary["skipped"] += 1
+            continue
+        try:
+            data = json.loads(artifact.read_text(encoding="utf-8", errors="replace"))
+            source = data.get("source_path")
+            if not source or not Path(source).is_file():
+                summary["skipped"] += 1
+                continue
+            segments = _parse_transcript_txt(run_dir / "transcript.txt")
+            result = _store().build(
+                source, run_dir, data.get("summary", ""), data.get("timeline", []),
+                data.get("entities", []), segments, None,
+                data.get("duration_seconds", 0.0),
+            )
+            summary["imported"] += 1
+            summary["sources"].append(str(source))
+        except Exception as exc:
+            summary["skipped"] += 1
+            console.print(f"[yellow]Skipped {run_dir.name}: {exc}[/yellow]")
+    if json_output:
+        typer.echo(json.dumps(summary, indent=2))
+    else:
+        console.print(f"[green]Imported {summary['imported']} run(s) into video memory"
+                      f"[/green] [dim]({summary['skipped']} skipped)[/dim]")
+        for source in summary["sources"]:
+            console.print(f"  [cyan]{Path(source).name}[/cyan]")
+
+
+@app.command("note")
+def note_cmd(
+    video: str = typer.Argument(..., help="Video whose memory the note belongs to (source path)"),
+    text: str = typer.Argument(..., help="What the agent observed, e.g. 'red dial on the left panel'"),
+    at: str = typer.Option("0:00", "--at", "-a", help="Timestamp the note describes (MM:SS, HH:MM:SS, or seconds)"),
+    frame: str = typer.Option(None, "--frame", help="Frame path this note describes, if any"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+):
+    """Write an agent observation back into video memory.
+
+    Vision agents that read frames themselves use this so what they see
+    joins the searchable global picture instead of living only in chat.
+    """
+    global console
+    console = Console(stderr=json_output)
+    from core.video import parse_time
+    try:
+        seconds = parse_time(at)
+    except Exception as exc:
+        console.print(f"[red]Invalid --at time: {exc}[/red]")
+        raise typer.Exit(code=1)
+    try:
+        recorded = _store().note(video, seconds, text, frame_path=frame)
+    except FileNotFoundError:
+        console.print(f"[red]Video not found: {video}[/red] (the source file must exist so its fingerprint matches)")
+        raise typer.Exit(code=1)
+    if json_output:
+        typer.echo(json.dumps(recorded, indent=2))
+    else:
+        console.print(f"[green]Noted {_format_time(recorded['at_seconds'])} in "
+                      f"{Path(recorded['source']).name}[/green] -> {recorded['note']}")
+
+
+@app.command("notes")
+def notes_cmd(
+    video: str = typer.Option(None, "--video", help="Restrict notes to this source video"),
+    json_output: bool = typer.Option(False, "--json", help="Output machine-readable JSON"),
+):
+    """List agent-written observations stored in video memory."""
+    global console
+    console = Console(stderr=json_output)
+    notes = _store().list_notes(video)
+    if json_output:
+        typer.echo(json.dumps(notes, indent=2))
+        return
+    if not notes:
+        console.print("No agent notes yet. Write one with: "
+                      "[cyan]openvision memory note VIDEO \"...\" --at 1:23[/cyan]")
+        return
+    for note in notes:
+        console.print(f"[bold cyan]{Path(note['source_path']).name}[/bold cyan] "
+                      f"[{_format_time(note['start_seconds'])}] {_console_safe(note['text'])}")
 
 
 @app.command("status")

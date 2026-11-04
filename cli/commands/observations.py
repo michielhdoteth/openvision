@@ -2,6 +2,7 @@
 import typer
 import json
 from pathlib import Path
+from typing import Optional
 from rich.console import Console
 from rich.table import Table
 from rich.markdown import Markdown
@@ -24,22 +25,24 @@ def _obs_dir() -> Path:
 
 def observations_cmd(
     action: str = typer.Argument("list", help="Action: list, view, delete"),
-    name: str = typer.Option(None, "--name", "-n", help="Observation name to view/delete"),
+    positional_name: Optional[str] = typer.Argument(
+        None, help="Observation name (alternative to --name)",
+    ),
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Observation name to view/delete"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
 ):
     """Manage saved video observations."""
+    name = name or positional_name
     if action == "list":
         _list_observations(json_output)
-    elif action == "view":
+    elif action in ("view", "delete"):
         if not name:
-            console.print("[red]Error:[/red] --name is required for view action")
+            console.print(f"[red]Error:[/red] pass the observation name (--name or positional) for the {action} action")
             raise typer.Exit(code=1)
-        _view_observation(name)
-    elif action == "delete":
-        if not name:
-            console.print("[red]Error:[/red] --name is required for delete action")
-            raise typer.Exit(code=1)
-        _delete_observation(name)
+        if action == "view":
+            _view_observation(name)
+        else:
+            _delete_observation(name)
     else:
         console.print(f"[red]Unknown action: {action}[/red] (use: list, view, delete)")
         raise typer.Exit(code=1)

@@ -1,7 +1,13 @@
 """openvision status - Show system status and run diagnostic checks."""
+import time
+import sys
+import importlib.util
+import concurrent.futures
 import typer
 import subprocess
 import shutil
+from typing import Any, Iterator, Optional
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
@@ -20,6 +26,7 @@ console = Console()
 def status_cmd(
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
     doctor: bool = typer.Option(False, "--doctor", help="Run full diagnostic checks"),
+    timeout: int = typer.Option(60, "--timeout", help="Seconds to spend on --doctor checks (0 = no limit)"),
 ):
     """Show openvision system status, GPU state, cache info. Use --doctor for diagnostics."""
     global console
@@ -29,7 +36,12 @@ def status_cmd(
     except FileNotFoundError:
         config = {}
 
-    # GPU info
+    # Probe providers once; --doctor reuses the same result instead of re-probing.
+    try:
+        detected = ProviderRegistry.detect()
+    except Exception:
+        detected = []
+
     gpu_name = get_gpu_name()
     vram = get_vram_info()
     safety = check_safe_mode(config)
@@ -61,18 +73,14 @@ def status_cmd(
             "downloads": str(dls),
             "runs": str(runs_path),
         }
-        try:
-            detected = ProviderRegistry.detect()
-            payload["providers"] = detected
-        except Exception:
-            payload["providers"] = []
+        payload["providers"] = detected
         payload["models"] = _get_model_status_list()
         if doctor:
-            payload["diagnostics"] = _run_diagnostics(config)
+            payload["diagnostics"] = list(_iter_diagnostics(config, detected, timeout))
         typer.echo(json.dumps(payload, indent=2))
     else:
         _display_status(result, runs, safety)
-        _display_provider_health()
+        _display_provider_health(detected)
         _display_model_status()
         path_table = Table(show_header=False, box=None, title="Data Paths")
         path_table.add_column("Key", style="cyan")
@@ -87,7 +95,7 @@ def status_cmd(
 
         if doctor:
             console.print()
-            _display_diagnostics(config)
+            _display_diagnostics(config, detected, timeout)
 
 
 def _get_loaded_models(config: dict) -> list[str]:
@@ -106,9 +114,6 @@ def _display_status(result: StatusResult, runs: list[dict], safety: dict):
     gpu_table.add_column("Value")
 
     gpu_table.add_row("GPU", result.gpu)
-    gpu_table.add_row("VRAM", f"{result.vram_used_gb:.1f} / {result.vram_total_gb:.1f} GB"
-                      if hasattr(result, 'vram_used_gb') else
-                      f"{result.vram_free_gb:.1f} GB free")
 
     free_gb = safety.get("free_gb", 0)
     total_gb = safety.get("total_gb", 0)
@@ -141,13 +146,14 @@ def _display_status(result: StatusResult, runs: list[dict], safety: dict):
         console.print("[dim]No cached runs yet.[/dim]")
 
 
-def _display_provider_health():
+def _display_provider_health(detected: Optional[list[dict]] = None):
     """Display health status of all VLM providers."""
-    try:
-        detected = ProviderRegistry.detect()
-    except Exception as e:
-        console.print(f"[dim]Could not probe providers: {e}[/dim]")
-        return
+    if detected is None:
+        try:
+            detected = ProviderRegistry.detect()
+        except Exception as e:
+            console.print(f"[dim]Could not probe providers: {e}[/dim]")
+            return
 
     if not detected:
         console.print("[dim]No VLM providers detected.[/dim]")
@@ -181,9 +187,6 @@ def _display_provider_health():
     console.print(provider_table)
 
 
-# ---------------------------------------------------------------------------
-# Model status
-# ---------------------------------------------------------------------------
 
 def _format_size(size_bytes: int) -> str:
     """Format bytes as human-readable size."""
@@ -238,9 +241,6 @@ def _display_model_status():
     console.print(table)
 
 
-# ---------------------------------------------------------------------------
-# Doctor diagnostics
-# ---------------------------------------------------------------------------
 
 def _check_binary(name: str) -> dict:
     """Check if a binary is available on PATH."""
@@ -257,157 +257,190 @@ def _check_binary(name: str) -> dict:
 
 
 def _check_python_package(pkg: str) -> dict:
-    """Check if a Python package is importable."""
+    """Check if a Python package is installed, without importing it.
+
+    Importing STT backends here costs tens of seconds (sherpa_onnx plus
+    faster_whisper alone measured 95s cold) and loads their runtimes into
+    this process for no reason. find_spec answers the presence question
+    instantly and reports versions only for packages already imported.
+    """
     try:
-        mod = __import__(pkg)
-        ver = getattr(mod, "__version__", "unknown")
-        return {"name": pkg, "installed": True, "version": ver}
-    except ImportError:
+        spec = importlib.util.find_spec(pkg)
+    except (ImportError, ValueError):
+        spec = None
+    if spec is None:
         return {"name": pkg, "installed": False, "version": None}
+    version = "installed"
+    module = sys.modules.get(pkg)
+    if module is not None:
+        version = str(getattr(module, "__version__", "installed"))
+    return {"name": pkg, "installed": True, "version": version}
 
 
 def _check_gpu_compute() -> dict:
-    """Check GPU compute capability."""
+    """Check GPU compute capability.
+
+    Deliberately does NOT call torch.cuda.*: initializing a CUDA context in
+    this process measured 26.7s cold and stalls far longer when the GPU is
+    busy, which is what made --doctor unusable. nvidia-smi answers the same
+    question in about a second.
+    """
     try:
-        import torch
-        if torch.cuda.is_available():
-            name = torch.cuda.get_device_name(0)
-            cap = torch.cuda.get_device_capability(0)
-            vram = torch.cuda.get_device_properties(0).total_mem / (1024**3)
-            return {"ok": True, "name": name, "capability": f"{cap[0]}.{cap[1]}", "vram_gb": round(vram, 1)}
-    except Exception:
-        pass
-    # Fallback: try nvidia-smi
-    try:
-        r = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
+        r = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.total,compute_cap", "--format=csv,noheader"],
                            capture_output=True, text=True, timeout=10)
         if r.returncode == 0:
-            parts = r.stdout.strip().split(",")
-            return {"ok": True, "name": parts[0].strip(), "vram_gb": round(float(parts[1].strip().split()[0]) / 1024, 1)}
+            parts = [p.strip() for p in r.stdout.strip().split(",")]
+            if len(parts) >= 2:
+                try:
+                    vram_gb = round(float(parts[1].split()[0]) / 1024, 1)
+                except ValueError:
+                    vram_gb = 0
+                cap = parts[2] if len(parts) > 2 else "unknown"
+                return {"ok": True, "name": parts[0], "capability": cap, "vram_gb": vram_gb}
     except Exception:
         pass
-    return {"ok": False, "name": "none", "vram_gb": 0}
+    return {"ok": False, "name": "none", "capability": "unknown", "vram_gb": 0}
 
 
 def _check_parakeet_model(config: dict) -> dict:
-    """Check if Parakeet model files exist."""
-    paths = config.get("paths") or {}
-    models_dir = Path(paths.get("models_dir") or "models")
-    if not models_dir.is_absolute():
-        from storage.paths import get_home
-        home = get_home(config)
-        models_dir = home / "models"
-
-    target = models_dir / "parakeet-tdt-0.6b-v3-int8"
-    required = ["model.onnx", "tokens.txt"]
+    """Check if Parakeet model files exist (shared resolution chain)."""
+    from core.models import resolve_model_dir, _expected_files
+    name = "parakeet-tdt-0.6b-v3-int8"
+    target, origin = resolve_model_dir("parakeet", name, config)
+    required = _expected_files("parakeet", name)
     present = [f.name for f in target.iterdir()] if target.exists() else []
     missing = [f for f in required if f not in present]
     return {
-        "name": "parakeet-tdt-0.6b-v3-int8",
+        "name": name,
         "path": str(target),
-        "installed": target.exists() and len(missing) == 0,
+        "origin": origin,
+        "installed": origin != "missing",
         "present_files": present,
         "missing_files": missing,
     }
 
 
-def _run_diagnostics(config: dict) -> list[dict]:
-    """Run all diagnostic checks and return results."""
-    checks = []
+def _iter_diagnostics(config: dict, detected: Optional[list[dict]] = None,
+                      timeout: int = 60) -> Iterator[dict]:
+    """Yield diagnostic checks one at a time, so output survives a slow check.
 
-    # 1. Binaries
-    for binary in ["ffmpeg", "ffprobe", "yt-dlp"]:
-        checks.append({"category": "binary", **_check_binary(binary)})
+    A generator rather than a list: results stream to the display as each
+    check finishes. Checks over the remaining time budget are marked skipped
+    instead of blocking the whole run.
+    """
+    if detected is None:
+        detected = []
+
+    deadline = time.time() + timeout if timeout else None
+
+    def budget_left() -> bool:
+        return deadline is not None and time.time() > deadline
+
+    def mark(check: dict) -> dict:
+        if check.get("category") == "vlm":
+            return check
+        if budget_left():
+            return {**check, "skipped": True,
+                    "version": f"skipped: over {timeout}s budget"}
+        return check
+
+    # 1. Binaries (probed concurrently; yt-dlp --version alone costs ~4s on Windows)
+    binaries = ["ffmpeg", "ffprobe", "yt-dlp"]
+    probe_results: list[Optional[dict]] = [None] * len(binaries)
+    with ThreadPoolExecutor(max_workers=len(binaries)) as pool:
+        futures = {pool.submit(_check_binary, name): i for i, name in enumerate(binaries)}
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                probe_results[futures[future]] = future.result()
+            except Exception as e:
+                probe_results[futures[future]] = {"name": binaries[futures[future]],
+                                                 "installed": False, "error": str(e)[:80]}
+    for index, check in enumerate(probe_results):
+        yield mark({"category": "binary", **(check or {"name": binaries[index], "installed": False})})
 
     # 2. GPU
-    checks.append({"category": "gpu", **_check_gpu_compute()})
+    yield mark({"category": "gpu", **_check_gpu_compute()})
 
-    # 3. Python packages
+    # 3. Python packages (presence only, no imports)
     for pkg in ["cv2", "torch", "numpy", "typer", "rich"]:
-        checks.append({"category": "python", **_check_python_package(pkg)})
-
-    # 4. OpenCV 5 engine check
-    try:
-        import cv2
-        ver = cv2.__version__
-        has_new_engine = hasattr(cv2, 'dnn') and hasattr(cv2.dnn, 'ENGINE_AUTO')
-        cuda_count = 0
-        try:
-            cuda_count = cv2.cuda.getCudaEnabledDeviceCount()
-        except Exception:
-            pass
-        checks.append({
-            "category": "opencv",
-            "name": f"opencv {ver}",
-            "installed": True,
-            "version": f"{'new DNN engine' if has_new_engine else 'classic engine'} | CUDA devices: {cuda_count}",
-        })
-    except Exception:
-        checks.append({"category": "opencv", "name": "opencv", "installed": False, "version": "not installed"})
+        yield mark({"category": "python", **_check_python_package(pkg)})
 
     # 4. STT providers
     for pkg, label in [("sherpa_onnx", "parakeet"), ("faster_whisper", "faster-whisper"), ("whisper", "openai-whisper")]:
-        checks.append({"category": "stt", "name": label, **_check_python_package(pkg)})
+        yield mark({"category": "stt", "name": label, **_check_python_package(pkg)})
 
     # 5. Parakeet model
-    checks.append({"category": "model", **_check_parakeet_model(config)})
+    yield mark({"category": "model", **_check_parakeet_model(config)})
 
-    # 6. VLM providers
-    try:
-        detected = ProviderRegistry.detect()
+    # 6. VLM providers (already probed by the caller)
+    if detected:
         for p in detected:
-            checks.append({
+            yield {
                 "category": "vlm",
                 "name": p.get("name", "?"),
                 "installed": p.get("status") == "available",
                 "version": ", ".join(p.get("models", [])[:3]),
-            })
-    except Exception as e:
-        checks.append({"category": "vlm", "name": "registry", "installed": False, "version": str(e)[:80]})
-
-    return checks
+            }
 
 
-def _display_diagnostics(config: dict):
-    """Display doctor-style diagnostic checks."""
-    checks = _run_diagnostics(config)
+def _run_diagnostics(config: dict, detected: Optional[list[dict]] = None,
+                     timeout: int = 60) -> list[dict]:
+    """Materialize all diagnostic checks (kept for callers that want a list)."""
+    return list(_iter_diagnostics(config, detected, timeout))
 
-    # Group by category
-    categories = {}
-    for c in checks:
-        cat = c.pop("category", "other")
-        categories.setdefault(cat, []).append(c)
 
-    for cat, items in categories.items():
-        table = Table(title=cat.upper(), show_lines=False)
-        table.add_column("Check", style="cyan", min_width=24)
-        table.add_column("Status")
-        table.add_column("Details")
+def _display_diagnostics(config: dict, detected: Optional[list[dict]] = None,
+                         timeout: int = 60):
+    """Display doctor-style diagnostic checks, one category at a time."""
+    checks = []
+    current_cat = None
+    items: list[dict] = []
 
-        for item in items:
-            name = item.get("name", "?")
-            installed = item.get("installed", item.get("ok", False))
-            version = item.get("version", "")
-            path_val = item.get("path", "")
-            missing = item.get("missing_files", [])
+    def flush():
+        if current_cat and items:
+            table = Table(title=current_cat.upper(), show_lines=False)
+            table.add_column("Check", style="cyan", min_width=24)
+            table.add_column("Status")
+            table.add_column("Details")
+            for item in items:
+                name = item.get("name", "?")
+                installed = item.get("installed", item.get("ok", False))
+                version = item.get("version", "")
+                path_val = item.get("path", "")
+                missing = item.get("missing_files", [])
 
-            if installed:
-                status = "[green]OK[/green]"
-            else:
-                status = "[red]MISSING[/red]"
+                if item.get("skipped"):
+                    status = "[yellow]SKIP[/yellow]"
+                elif installed:
+                    status = "[green]OK[/green]"
+                else:
+                    status = "[red]MISSING[/red]"
 
-            details = version or path_val or ""
-            if missing:
-                details += f" (missing: {', '.join(missing)})"
+                details = version or path_val or ""
+                if missing:
+                    details += f" (missing: {', '.join(missing)})"
+                table.add_row(name, status, details)
+            console.print(table)
 
-            table.add_row(name, status, details)
+    for check in _iter_diagnostics(config, detected, timeout):
+        cat = check.get("category", "other")
+        if cat != current_cat:
+            flush()
+            items = []
+            current_cat = cat
+        items.append(check)
+        checks.append(check)
+    flush()
 
-        console.print(table)
-
-    # Summary
     total = len(checks)
-    passed = sum(1 for c in checks if c.get("installed", c.get("ok", False)))
-    if passed == total:
-        console.print(f"\n[green bold]All {total} checks passed.[/green bold]")
+    skipped = sum(1 for c in checks if c.get("skipped"))
+    passed = sum(1 for c in checks
+                 if not c.get("skipped") and c.get("installed", c.get("ok", False)))
+    if passed + skipped == total:
+        console.print(
+            f"\n[green bold]All {passed} checks passed"
+            + (f" ({skipped} skipped).[/green bold]" if skipped else f".[/green bold]"))
     else:
-        console.print(f"\n[yellow]{passed}/{total} checks passed, {total - passed} issues found.[/yellow]")
+        console.print(
+            f"\n[yellow]{passed}/{total - skipped} checks passed, "
+            f"{total - passed - skipped} issues found.[/yellow]")

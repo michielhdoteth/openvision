@@ -15,8 +15,10 @@ from core.audio import extract_audio, has_audio_stream, cleanup_wav
 
 logger = logging.getLogger(__name__)
 
-# Default model path relative to project root
-_DEFAULT_MODEL_DIR = Path(__file__).resolve().parent.parent / "models" / "parakeet-tdt-0.6b-v3-int8"
+_DEFAULT_MODEL_NAME = "parakeet-tdt-0.6b-v3-int8"
+# Fallback only — the shared resolution chain (config override -> home cache ->
+# repo checkout) in core.models decides where the model really lives.
+_DEFAULT_MODEL_DIR = Path(__file__).resolve().parent.parent / "models" / _DEFAULT_MODEL_NAME
 
 
 def _resolve_device(requested: str) -> str:
@@ -60,7 +62,6 @@ def _read_wav_float32(wav_path: str) -> tuple[list[float], int]:
     else:
         raise ValueError(f"Unsupported WAV bit depth: {sampwidth * 8}")
 
-    # Mix to mono if stereo
     if n_channels > 1:
         audio = [audio[i] for i in range(0, len(audio), n_channels)]
 
@@ -104,8 +105,17 @@ class ParakeetProvider:
     """
 
     def __init__(self, config: Optional[dict] = None):
+        from storage.config import load_config
+        try:
+            app_config = load_config()
+        except Exception:
+            app_config = {}
         self.config = config or {}
-        self.model_dir = Path(self.config.get("model_dir", str(_DEFAULT_MODEL_DIR)))
+        from core.models import resolve_model_dir
+        resolved, origin = resolve_model_dir("parakeet", _DEFAULT_MODEL_NAME, app_config)
+        override = self.config.get("model_dir")
+        self.model_dir = Path(override) if override else resolved
+        self._model_origin = origin
         self._requested_device = self.config.get("device", "auto")
         self.device = _resolve_device(self._requested_device)
         self._recognizer = None
@@ -118,7 +128,6 @@ class ParakeetProvider:
         if self._recognizer is not None:
             return
 
-        # Check if model exists, auto-download if missing
         required_files = ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"]
         missing = [f for f in required_files if not (self.model_dir / f).exists()]
         if missing:
@@ -127,9 +136,14 @@ class ParakeetProvider:
                 from core.models import download_and_extract_parakeet
                 self.model_dir = download_and_extract_parakeet()
             except Exception as e:
-                raise FileNotFoundError(
-                    f"Parakeet model not found and auto-download failed: {e}\n"
-                    f"Run 'openvision install' to download the model manually."
+                from core.errors import OpenVisionError
+                raise OpenVisionError(
+                    code="STT_MODEL_UNAVAILABLE",
+                    message=(
+                        f"Parakeet model could not be loaded from {self.model_dir} "
+                        f"({e}). The model may not be installed or the download failed."
+                    ),
+                    suggested_retry={"command": "openvision install get parakeet"},
                 )
 
         import sherpa_onnx
@@ -210,7 +224,6 @@ class ParakeetProvider:
 
         audio, sample_rate = _read_wav_float32(wav_path)
 
-        # Get duration from audio length
         duration = len(audio) / sample_rate if sample_rate > 0 else 0.0
 
         stream = self._recognizer.create_stream()
@@ -307,7 +320,6 @@ def _split_into_segments(text: str, total_duration: float) -> list[TranscriptSeg
     if not text:
         return []
 
-    # Split on sentence boundaries
     sentences = re.split(r'(?<=[.!?])\s+', text)
     sentences = [s.strip() for s in sentences if s.strip()]
 

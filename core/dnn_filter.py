@@ -123,7 +123,6 @@ class DNNFilterPipeline:
         out = Path(output_dir) if output_dir else Path(tempfile.mkdtemp())
         out.mkdir(parents=True, exist_ok=True)
 
-        # Build ffmpeg command with dnn detection filter
         # dnn_detect outputs bounding boxes to stderr as structured text
         model_str = str(self.model_path).replace("\\", "/")
 
@@ -143,10 +142,8 @@ class DNNFilterPipeline:
             logger.warning("DNN filter extraction timed out")
             return []
 
-        # Parse detection results from ffmpeg stderr
         detections = self._parse_dnn_output(result.stderr)
 
-        # Build frame list
         frames = []
         frame_files = sorted(out.glob("frame_*.jpg"))
         for i, fpath in enumerate(frame_files):

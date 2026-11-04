@@ -15,20 +15,47 @@ defaults:
 
 models:
   vlm:
-    # Provider selection: "auto" | "lmstudio" | "ollama" | "llamacpp" | "openai" | "groq" | "together" | "vllm"
+    # Provider selection: "auto" | "lmstudio" | "llamacpp" | "gemini" | "openai" | "groq" | "together" | "vllm"
     provider: "auto"
     model: "auto"     # Auto-detect or explicit name (e.g. "llava:13b", "gpt-4o")
 
-    # Provider-specific settings (optional, with sensible defaults)
+    # Provider-specific settings (optional, with sensible defaults).
+    # base_url defaults to empty so auto-detection scans common ports
+    # (1234, 1235, 8080). Set this only when your server runs on a
+    # non-standard port.
     lmstudio:
-      base_url: "http://localhost:1234/v1"
-
-    ollama:
-      base_url: "http://localhost:11434"
-      keep_alive: "5m"
+      base_url: ""
 
     llamacpp:
       base_url: "http://localhost:8080/v1"
+
+    # Gemini (native generateContent API) - the only backend that accepts
+    # whole-video input. Auth via GEMINI_API_KEY or GOOGLE_API_KEY.
+    gemini:
+      base_url: "https://generativelanguage.googleapis.com/v1beta"
+      model: "gemini-3.1-flash-lite"   # cheapest verified video-input tier
+
+    # Decision tier: answering/verification calls (e.g. `memory ask`).
+    # Defaults to the local llama.cpp server so questions stay on-device.
+    # Use `gemini` (hosted, video-capable) or `openai` for stronger answers:
+    #   provider: gemini   -> models.vlm.gemini settings apply
+    #   provider: openai   -> GEMINI-free; needs OPENAI_API_KEY
+    #   provider: llama.cpp-style local: needs a running llama.cpp server
+    decision:
+      provider: "llamacpp"
+      model: "auto"
+      temperature: 0.1
+      max_tokens: 1024
+
+    # Typed decisions: probabilities instead of text, no output-token cost.
+    # Used by `ask --decision yesno|choice|score`; frames travel in `state`.
+    # presets: openrouter (proxies Luna/Jev/Clef) | openai (native, OPENAI_API_KEY)
+    decisions:
+      preset: "openrouter"
+      model: "openai/gpt-6-luna-decisions"
+      api_key_env: "OPENROUTER_API_KEY"
+      timeout: 90
+      # max_images: 16    # defaults to the model's own cap (Clef/Jev 4, Luna 128)
 
     openai:
       base_url: null   # Use official API (https://api.openai.com/v1)
@@ -46,6 +73,20 @@ models:
     max_loaded: 1
     temperature: 0.1
     max_tokens: 1024
+
+  # STT model locations. Leave model_dir unset to use the shared cache at
+  # ~/.openvision/models (or OPENVISION_MODELS_DIR). Point model_dir at your
+  # own existing model directory to skip ALL downloads:
+  #   models:
+  #     parakeet:
+  #       model_dir: "D:/ai-models/parakeet-tdt-0.6b-v3-int8"
+  #     whisper:
+  #       model_dir: "D:/ai-models/faster-whisper-base"
+  parakeet:
+    model_dir: null
+  whisper:
+    model_size: "base"
+    model_dir: null
 
   segmentation:
     provider: "sam3"

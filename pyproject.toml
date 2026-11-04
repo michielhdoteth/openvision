@@ -62,10 +62,20 @@ openvision = "cli.app:app"
 ov = "cli.app:app"
 
 [tool.setuptools.packages.find]
+# "openvision*" is the public API package and MUST stay in this list. It was
+# dropped here in 6c1c30e and re-added in 8889660; while it was missing the
+# `openvision` console script died with "No module named 'openvision'" and the
+# whole test suite still passed, because `pythonpath = ["."]` below puts the
+# project root on sys.path and masks the broken editable finder. Changing this
+# list requires a reinstall (`pip install -e . --no-deps`).
+# tests/test_packaging.py fails if this entry is dropped without a reinstall.
 include = ["openvision*", "cli*", "core*", "providers*", "storage*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Kept for collection only. It also masks a broken editable install, so
+# tests/test_packaging.py verifies the installed distribution from a cwd outside
+# this project.
 pythonpath = ["."]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",

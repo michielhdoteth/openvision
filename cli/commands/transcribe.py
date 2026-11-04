@@ -20,7 +20,6 @@ def _safe_print(msg: str):
     try:
         console.print(msg)
     except UnicodeEncodeError:
-        # Strip Rich markup for plain-text fallback
         import re
         plain = re.sub(r'\[/?\w+(?:=.*?)?\]', '', msg)
         print(plain)
@@ -39,7 +38,9 @@ def transcribe_cmd(
     cookies_from_browser: str = typer.Option(None, "--cookies-from-browser", help="Read cookies from browser (chrome, firefox, edge, safari)"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
     jsonl: bool = typer.Option(False, "--jsonl", help="Streaming JSONL output"),
-    save_text: bool = typer.Option(False, "--save", help="Save transcript to text file"),
+    save_text: bool = typer.Option(False, "--save", help="Save transcript to text file beside the input"),
+    save_to: str = typer.Option(None, "--save-to", help="Save transcript text to this exact path"),
+    no_run: bool = typer.Option(False, "--no-run", help="Do not write this transcript to the run cache or video memory"),
     diarize_audio: bool = typer.Option(False, "--diarize", help="Add speaker labels via diarization"),
     min_speakers: int = typer.Option(None, "--min-speakers", help="Minimum number of speakers"),
     max_speakers: int = typer.Option(None, "--max-speakers", help="Maximum number of speakers"),
@@ -61,7 +62,6 @@ def transcribe_cmd(
 
     _safe_print(f"[dim]Loading {provider_name.title()} model on {device}...[/dim]")
 
-    # Parse time window
     from core.video import parse_time
     window_start = parse_time(from_time) if from_time else None
     window_end = parse_time(to_time) if to_time else None
@@ -75,15 +75,12 @@ def transcribe_cmd(
         config["model_size"] = model
     provider = get_provider(provider_name, config)
 
-    # Resolve cookies
     cookies_file = cookies
     owned_cookie_file = None
     if cookies_from_browser and not cookies_file:
-        import tempfile
         try:
             import browser_cookie3
             cj = getattr(browser_cookie3, cookies_from_browser.replace("-", "_").lower())()
-            # Write Netscape cookie file
             cookie_tmp = tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode="w")
             cookie_tmp.write("# Netscape HTTP Cookie File\n")
             for c in cj:
@@ -132,7 +129,6 @@ def transcribe_cmd(
         except FileNotFoundError:
             pass
 
-    # Check for downloaded subtitle files
     if is_remote and dl_result.get("subs_file") and os.path.exists(dl_result["subs_file"]):
         try:
             from core.captions import parse_vtt, filter_range
@@ -156,6 +152,7 @@ def transcribe_cmd(
 
     # When time window specified, extract audio segment for faster transcription
     if (window_start is not None or window_end is not None) and transcript is None:
+        seg_path = None
         try:
             from core.audio import extract_audio_segment
             seg_tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
@@ -180,7 +177,7 @@ def transcribe_cmd(
             _safe_print(f"[dim]Segment extraction failed ({e}), transcribing full file...[/dim]")
             transcript = None
         finally:
-            if os.path.exists(seg_path):
+            if seg_path and os.path.exists(seg_path):
                 os.unlink(seg_path)
 
     # Try existing captions first (faster, no GPU needed)
@@ -217,7 +214,6 @@ def transcribe_cmd(
         if len(transcript.segments) < before:
             _safe_print(f"[dim]Filtered to {len(transcript.segments)} segments in time window[/dim]")
 
-    # Apply diarization if requested
     if diarize_audio and transcript.segments:
         try:
             from providers.diarizer import DiarizerProvider, merge_transcript_with_diarization
@@ -225,7 +221,6 @@ def transcribe_cmd(
 
             _safe_print("[dim]Running speaker diarization...[/dim]")
 
-            # Extract audio to temp WAV for diarizer
             tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
             tmp_path = tmp.name
             tmp.close()
@@ -251,7 +246,47 @@ def transcribe_cmd(
         except Exception as e:
             _safe_print(f"[yellow]Diarization failed: {e}[/yellow]")
 
-    # Emit JSONL segments
+    # Persist the transcript before printing it: stdout is lossy when a harness
+    # truncates a long run, so the run cache and video memory are the recovery
+    # path. Both write by source fingerprint, so frames, captions, observations
+    # and ask evidence already stored for this video stay and this transcript
+    # merges into them instead of replacing them.
+    if not no_run:
+        try:
+            from storage.cache import RunCache
+            from storage.config import load_config as _load_cfg
+            from storage.paths import run_cache_dir
+            from core.video_memory import VideoMemoryStore
+
+            try:
+                cfg = _load_cfg()
+            except FileNotFoundError:
+                cfg = {}
+            cache = RunCache(str(run_cache_dir(cfg)))
+            options = {"command": "transcribe", "provider": provider_name,
+                       "language": language, "from": str(window_start),
+                       "to": str(window_end), "diarize": bool(diarize_audio)}
+            key = cache.cache_key(str(input_path), mode="transcribe", options=options)
+            metadata = {
+                "source": str(input_path), "command": "transcribe",
+                "provider": provider_name, "language": transcript.language,
+                "duration_seconds": transcript.duration_seconds,
+                "segments": len(transcript.segments),
+            }
+            run_dir = cache.create_run(key, metadata=metadata)
+            cache.save_transcript_batch(run_dir, transcript.segments)
+            cache.save_text(run_dir, "transcript.txt", transcript.text or "")
+            indexed = VideoMemoryStore(cache._db_path).add_transcript(
+                str(input_path), run_dir, transcript.segments,
+                duration_seconds=transcript.duration_seconds,
+            )
+            _safe_print(
+                f"[green]Transcript cached:[/green] {run_dir} "
+                f"[dim]({indexed.get('chunks', 0)} memory chunks, run {run_dir.name})[/dim]"
+            )
+        except Exception as e:
+            _safe_print(f"[yellow]Could not persist transcript ({e}); it exists only in stdout now.[/yellow]")
+
     if writer:
         for seg in transcript.segments:
             writer.emit_transcript(seg.start, seg.end, seg.text, getattr(seg, "speaker", None))
@@ -259,7 +294,6 @@ def transcribe_cmd(
                           "duration": transcript.duration_seconds})
         writer.flush()
 
-    # Build output
     if json_output:
         output = {
             "language": transcript.language,
@@ -274,17 +308,16 @@ def transcribe_cmd(
     elif not jsonl:
         _display_transcript(transcript)
 
-    # Optionally save
-    if save_text:
-        txt_path = input_path.with_suffix(".txt")
+    text_path = Path(save_to) if save_to else (input_path.with_suffix(".txt") if save_text else None)
+    if text_path:
         lines = [
             f"[{_fmt_time(s.start)}] {'[' + s.speaker + '] ' if s.speaker else ''}{s.text}"
             for s in transcript.segments
         ]
-        txt_path.write_text("\n".join(lines), encoding="utf-8")
-        _safe_print(f"[green]Transcript saved:[/green] {txt_path}")
+        text_path.parent.mkdir(parents=True, exist_ok=True)
+        text_path.write_text("\n".join(lines), encoding="utf-8")
+        _safe_print(f"[green]Transcript saved:[/green] {text_path}")
 
-    # Keep full audio if requested
     if keep_audio:
         try:
             from core.audio import save_full_audio
@@ -297,7 +330,6 @@ def transcribe_cmd(
 
 def _display_transcript(transcript):
     """Display transcript in rich format."""
-    # Summary
     summary = (
         f"Language: {transcript.language} | "
         f"Duration: {transcript.duration_seconds:.0f}s | "
@@ -305,7 +337,6 @@ def _display_transcript(transcript):
     )
     console.print(Panel(summary, title="[bold cyan]Transcription[/bold cyan]"))
 
-    # Segments table
     table = Table()
     table.add_column("Time", style="cyan", width=14)
     table.add_column("Speaker", style="magenta", width=12)

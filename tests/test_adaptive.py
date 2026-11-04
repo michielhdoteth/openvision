@@ -3,7 +3,74 @@ import pytest
 from core.sampling import adaptive_sample
 
 
+def _coarse_pass(duration: float, count: int = 300):
+    """Frame dicts spanning `duration`, like extract_frames() would return."""
+    return [{"timestamp": i * duration / (count - 1), "image": None} for i in range(count)]
+
+
+def test_adaptive_sample_spans_the_full_duration_when_scenes_cluster_at_the_head(monkeypatch):
+    """Regression: a change-dense opening consumed the whole frame budget.
+
+    `adaptive_sample` took `scene_candidates[:max_frames]`. On a 23m52s video
+    with a busy opening that produced 12 frames all inside the first 162s -- 89%
+    of the video unsampled, reported as a success.
+    """
+    import core.video
+
+    duration, coarse_count = 1432.0, 300
+    frames = _coarse_pass(duration, coarse_count)
+    monkeypatch.setattr(core.video, "probe",
+                        lambda path: {"duration_seconds": duration, "fps": 30.0})
+    monkeypatch.setattr(core.video, "extract_frames", lambda *a, **k: frames)
+    # Scene changes only in the first 5% of the video.
+    head = [i for i, f in enumerate(frames) if f["timestamp"] <= duration * 0.05]
+    assert head
+    monkeypatch.setattr("core.sampling.detect_scenes", lambda *a, **k: head)
+
+    result = adaptive_sample("fake.mp4", max_frames=12)
+
+    assert len(result) == 12
+    assert result[0]["timestamp"] < duration * 0.02
+    assert result[-1]["timestamp"] >= duration * 0.9
+    span = result[-1]["timestamp"] - result[0]["timestamp"]
+    assert span >= duration * 0.85, f"only {span:.0f}s of {duration:.0f}s sampled"
+
+
+def test_adaptive_sample_spans_the_full_duration_without_any_scene_changes(monkeypatch):
+    import core.video
+
+    duration, coarse_count = 1432.0, 300
+    frames = _coarse_pass(duration, coarse_count)
+    monkeypatch.setattr(core.video, "probe",
+                        lambda path: {"duration_seconds": duration, "fps": 30.0})
+    monkeypatch.setattr(core.video, "extract_frames", lambda *a, **k: frames)
+    monkeypatch.setattr("core.sampling.detect_scenes", lambda *a, **k: [])
+
+    result = adaptive_sample("fake.mp4", max_frames=12)
+
+    assert len(result) == 12
+    assert result[-1]["timestamp"] >= duration * 0.9
+
+
+def test_adaptive_sample_never_exceeds_the_frame_budget(monkeypatch):
+    import core.video
+
+    duration, coarse_count = 600.0, 300
+    frames = _coarse_pass(duration, coarse_count)
+    monkeypatch.setattr(core.video, "probe",
+                        lambda path: {"duration_seconds": duration, "fps": 30.0})
+    monkeypatch.setattr(core.video, "extract_frames", lambda *a, **k: frames)
+    monkeypatch.setattr("core.sampling.detect_scenes",
+                        lambda *a, **k: list(range(0, coarse_count, 3)))
+
+    for budget in (1, 2, 5, 12, 40, 60, 300, 500):
+        result = adaptive_sample("fake.mp4", max_frames=budget)
+        assert len(result) <= budget, f"budget {budget} produced {len(result)}"
+        assert result == sorted(result, key=lambda f: f["timestamp"])
+
+
 class TestAdaptiveSample:
+
     def test_decodes_video_only_once(self, monkeypatch):
         import core.video
         calls = []

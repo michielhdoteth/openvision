@@ -30,7 +30,6 @@ def create_contact_sheet(
     cols, rows = grid_size
     total_cells = cols * rows
 
-    # Select evenly spaced frames if we have more than cells
     if len(frames) > total_cells:
         step = len(frames) / total_cells
         selected = [frames[int(i * step)] for i in range(total_cells)]
@@ -40,7 +39,6 @@ def create_contact_sheet(
         while len(selected) < total_cells:
             selected.append(selected[-1] if selected else frames[0])
 
-    # Build the grid
     sheet_w = cols * cell_width
     sheet_h = rows * cell_height
     sheet = np.zeros((sheet_h, sheet_w, 3), dtype=np.uint8)
@@ -55,18 +53,15 @@ def create_contact_sheet(
         if img is None:
             continue
 
-        # Resize to fit cell
         h, w = img.shape[:2]
         scale = min(cell_width / w, cell_height / h)
         new_w, new_h = int(w * scale), int(h * scale)
         resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
-        # Center in cell
         ox = x + (cell_width - new_w) // 2
         oy = y + (cell_height - new_h) // 2
         sheet[oy:oy + new_h, ox:ox + new_w] = resized
 
-        # Draw timestamp overlay
         if show_timestamps:
             ts = frame.get("timestamp_str", "")
             if not ts:
@@ -75,14 +70,11 @@ def create_contact_sheet(
             font_scale = 0.5
             thickness = 1
             (tw, th), _ = cv2.getTextSize(ts, font, font_scale, thickness)
-            # Background rectangle
             cv2.rectangle(sheet, (x + 4, y + cell_height - th - 8), (x + tw + 10, y + cell_height - 2), (0, 0, 0), -1)
             cv2.putText(sheet, ts, (x + 6, y + cell_height - 6), font, font_scale, (255, 255, 255), thickness)
 
-        # Draw cell border
         cv2.rectangle(sheet, (x, y), (x + cell_width - 1, y + cell_height - 1), (80, 80, 80), 1)
 
-    # Save
     if output_path is None:
         output_path = "contact_sheet.jpg"
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)

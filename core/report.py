@@ -33,14 +33,12 @@ def generate_keep_drop_report(
     kept_count = len(kept_indices)
     dropped_count = total - kept_count
 
-    # Build timeline data
     timeline_data = []
     for i, frame in enumerate(all_frames):
         ts = frame.get("timestamp", 0)
         kept = i in kept_set
         timeline_data.append({"index": i, "time": ts, "kept": kept})
 
-    # Encode kept frame thumbnails
     kept_thumbs = ""
     for idx in kept_indices:
         if idx >= len(all_frames):
@@ -55,7 +53,6 @@ def generate_keep_drop_report(
         ts_str = frame.get("timestamp_str", f"{ts:.1f}s")
         kept_thumbs += f'<div class="thumb"><img src="data:image/jpeg;base64,{b64}" alt="Frame {idx}"><span>{ts_str}</span></div>'
 
-    # Stats
     stats_html = ""
     if dedup_stats:
         stats_html = "<ul>"

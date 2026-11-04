@@ -179,7 +179,6 @@ def save_full_audio(video_path: str, output_path: str) -> str:
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if result.returncode != 0:
-            # Fallback: re-encode if copy fails (e.g., incompatible container)
             cmd_fallback = [
                 "ffmpeg", "-y",
                 "-i", str(video),

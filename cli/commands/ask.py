@@ -2,12 +2,15 @@
 import typer
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 from rich.console import Console
 from rich.panel import Panel
 
 from core.video import probe
+from core.download import is_url
 from core.sampling import smart_sample, find_keyframes_for_question
+from core.errors import OpenVisionError
+from providers.decisions import DecisionProvider
 from providers.registry import ProviderRegistry
 from providers.base import TokenUsage
 from storage.config import load_config, get_mode_config
@@ -34,7 +37,12 @@ def ask_cmd(
     max_frames: int = typer.Option(None, "--max-frames", min=1, max=300, help="Maximum frames to inspect (overrides the mode budget)"),
     json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
     jsonl: bool = typer.Option(False, "--jsonl", help="Streaming JSONL output"),
-    provider_name: str = typer.Option(None, "--provider", help="VLM provider: auto, lmstudio, ollama, llamacpp, openai, groq, together, vllm, localai"),
+    tier: str = typer.Option("auto", "--tier", help="Who answers: auto (bounded answer space -> decision model), vlm, decision"),
+    decision: Optional[str] = typer.Option(None, "--decision", "--decide", help="Decision answer shape: noul (true/false probability), choice (candidate labels), score (ordered levels)"),
+    choices: Optional[str] = typer.Option(None, "--choices", help="Comma-separated candidate answers for a choice decision"),
+    levels: Optional[str] = typer.Option(None, "--levels", help="Comma-separated ordered levels for a score decision"),
+    min_confidence: float = typer.Option(0.6, "--min-confidence", min=0.0, max=1.0, help="Probability bar for a confident decision answer"),
+    provider_name: str = typer.Option(None, "--provider", help="Provider: auto, lmstudio, llamacpp, gemini, openai, groq, together, vllm, localai, or a decision model (luna-decisions, clef, clef-flash, clef-omni, jev, decisions)"),
     raw_frames: bool = typer.Option(False, "--raw-frames", help="Skip VLM — return raw frame paths for vision-capable agents"),
 ):
     """Ask a targeted question about video content."""
@@ -54,15 +62,33 @@ def ask_cmd(
         console.print("[red]Error:[/red] Question cannot be empty.")
         raise typer.Exit(code=1)
 
-    # Load config
     config = load_config()
     mode_config = get_mode_config(config, mode)
+
+    try:
+        decision_kind = _normalize_decision_kind(decision, choices, levels)
+    except OpenVisionError as e:
+        console.print(f"[red]Error: {e.message}[/red]")
+        raise typer.Exit(code=1)
+
+    # A still image has no frame track to sample: answer over the single frame
+    # instead of routing it through video extraction.
+    from core.image import is_image_file
+    if not is_url(path) and is_image_file(input_path):
+        if decision_kind is not None:
+            console.print("[yellow]Note:[/yellow] --decision uses frames; falling back to the VLM for a still image.")
+        import cli.commands.observe as observe_cmd
+        observe_cmd._handle_image(
+            input_path, question, None, json_output, config,
+            mode_config.get("resolution", 768), max_tokens,
+            provider_name, jsonl, False,
+        )
+        return
 
     fps = mode_config.get("fps", 0.5)
     max_frames = max_frames or mode_config.get("max_frames", 60)
     resolution = mode_config.get("resolution", 768)
 
-    # Determine search mode
     search_mode = None
     if mode == "dense":
         search_mode = "dense"
@@ -86,7 +112,6 @@ def ask_cmd(
 
     console.print(f"[dim]Analyzing {len(frames)} frames to answer: {question}[/dim]")
 
-    # --- raw-frames mode: skip VLM, return frame paths ---
     if raw_frames:
         import tempfile
         from core.image import save_frame
@@ -119,7 +144,45 @@ def ask_cmd(
             writer.flush()
         return
 
-    # Query VLM
+    resolved_tier = (tier or "auto").strip().lower()
+    if resolved_tier not in ("auto", "vlm", "decision"):
+        console.print("[red]Error:[/red] --tier must be auto, vlm, or decision.")
+        raise typer.Exit(code=1)
+
+    use_decision = resolved_tier == "decision" or (
+        resolved_tier == "auto" and decision_kind is not None
+    )
+    if use_decision:
+        try:
+            result = _run_decision(
+                frames,
+                question,
+                decision_kind or "noul",
+                choices,
+                levels,
+                min_confidence,
+                config,
+                provider_name,
+            )
+        except OpenVisionError as e:
+            console.print(f"[red]Error: {e.message}[/red]")
+            raise typer.Exit(code=1)
+
+        if writer:
+            writer.emit_summary(result.answer, [e.get("answer", "") for e in result.evidence])
+            writer.emit_done({
+                "confidence": result.confidence,
+                "evidence_count": len(result.evidence),
+                "tier": "decision",
+            })
+            writer.flush()
+
+        if json_output:
+            typer.echo(json.dumps(result.model_dump(), indent=2))
+        elif not jsonl:
+            _display_ask_result(result, question)
+        return
+
     vlm_config = config.get("models", {}).get("vlm", {})
     if max_tokens:
         vlm_config = {**vlm_config, "max_tokens": max_tokens}
@@ -169,14 +232,11 @@ def ask_cmd(
 
     provider.close()
 
-    # Compile final answer from evidence
     if evidence:
-        # Use the most detailed answer as primary
         best = max(evidence, key=lambda e: len(e["answer"]))
         final_answer = best["answer"]
         confidence = "high" if len(evidence) >= 2 else "medium"
 
-        # Add synthesis if multiple evidence points
         if len(evidence) > 1:
             timestamps = [e["timestamp"] for e in evidence]
             final_answer += f" (observed at {', '.join(timestamps)})"
@@ -202,6 +262,161 @@ def ask_cmd(
         _display_ask_result(result, question)
 
 
+def _split_csv(value: Optional[str]) -> list[str]:
+    """Split a comma or pipe separated option into trimmed labels."""
+    if not value:
+        return []
+    return [part.strip() for part in value.replace("|", ",").split(",") if part.strip()]
+
+
+def _normalize_decision_kind(
+    decision: Optional[str], choices: Optional[str], levels: Optional[str]
+) -> Optional[str]:
+    """Resolve --decision to noul, choice, or score (None = VLM path)."""
+    aliases = {
+        "label": "choice",
+        "labels": "choice",
+        "choices": "choice",
+        "pick": "choice",
+        "bool": "noul",
+        "boolean": "noul",
+        "yes/no": "noul",
+        "predicate": "noul",
+        "rating": "score",
+        "scale": "score",
+    }
+    kind = (decision or "").strip().lower()
+    kind = aliases.get(kind, kind)
+
+    if not kind:
+        if choices:
+            return "choice"
+        if levels:
+            return "score"
+        return None
+
+    if kind not in ("noul", "choice", "score"):
+        raise OpenVisionError(
+            "DECISION_BAD_KIND",
+            f"Unknown --decision '{decision}'. Use noul, choice, or score.",
+        )
+    return kind
+
+
+def _evenly(frames: list, limit: int) -> list:
+    """Pick at most `limit` frames spread across the whole timeline."""
+    limit = max(int(limit or 1), 1)
+    if len(frames) <= limit:
+        return list(frames)
+    step = len(frames) / limit
+    picked = [frames[min(int(index * step), len(frames) - 1)] for index in range(limit)]
+    if picked[-1] is not frames[-1]:
+        picked[-1] = frames[-1]
+    return picked
+
+
+def _run_decision(
+    frames: list,
+    question: str,
+    kind: str,
+    choices: Optional[str],
+    levels: Optional[str],
+    min_confidence: float,
+    config: dict,
+    provider_name: Optional[str],
+) -> AskResult:
+    """Answer one typed question by sending the sampled frames in a single request."""
+    decision_config = dict((config.get("models", {}) or {}).get("decisions", {}) or {})
+    if provider_name:
+        decision_config["provider"] = provider_name
+        # A named provider alias carries its own model id.
+        decision_config.pop("model", None)
+    resolved_name = decision_config.pop("provider", "decisions")
+
+    try:
+        provider = ProviderRegistry.create({"provider": resolved_name, **decision_config})
+    except ValueError as e:
+        raise OpenVisionError("DECISION_UNKNOWN_PROVIDER", str(e)) from e
+
+    try:
+        if getattr(provider, "kind", "chat") != "decision":
+            raise OpenVisionError(
+                "DECISION_WRONG_PROVIDER",
+                f"'{resolved_name}' is a chat model and cannot answer typed questions. "
+                "Use a decision provider: decisions, luna-decisions, clef, clef-flash, "
+                "clef-omni, jev, or openai-decisions.",
+            )
+
+        criteria: Optional[list[str]] = None
+        if kind == "choice":
+            criteria = _split_csv(choices)
+            if len(criteria) < 2:
+                raise OpenVisionError(
+                    "DECISION_NEEDS_CHOICES",
+                    "A choice decision needs candidate answers: --choices a,b,c.",
+                    {"flag": "--choices"},
+                )
+        elif kind == "score":
+            criteria = _split_csv(levels)
+            if len(criteria) < 2:
+                raise OpenVisionError(
+                    "DECISION_NEEDS_LEVELS",
+                    "A score decision needs ordered levels: --levels low,medium,high.",
+                    {"flag": "--levels"},
+                )
+
+        if frames and not getattr(provider, "supports_images", True):
+            raise OpenVisionError(
+                "DECISION_TEXT_ONLY",
+                f"{getattr(provider, 'preset', 'this')} decisions are text-only: "
+                "frames would be billed as text and ignored. Use --provider jev "
+                "(OpenRouter) or Jev's own API when the frames must be seen.",
+                {"provider": "openrouter"},
+            )
+        used = _evenly(frames, getattr(provider, "max_images", 8))
+        decision = cast(DecisionProvider, provider)
+        response = decision.decide(
+            [frame["image"] for frame in used],
+            question,
+            kind=kind,
+            criteria=criteria,
+        )
+    finally:
+        provider.close()
+
+    answer = response.first()
+    text = answer.as_text()
+    agreement = answer.agreement()
+    if agreement >= max(0.85, min_confidence):
+        confidence = "high"
+    elif agreement >= min_confidence:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    if len(used) > 1:
+        span = f"{used[0]['timestamp_str']} - {used[-1]['timestamp_str']}"
+    else:
+        span = used[0]["timestamp_str"]
+
+    evidence = [{
+        "timestamp": span,
+        "time_seconds": used[0]["timestamp"],
+        "answer": text,
+        "confidence": confidence,
+        "frames": len(used),
+        "model": response.model,
+        "provider": response.provider,
+    }]
+
+    return AskResult(
+        answer=text,
+        evidence=evidence,
+        confidence=confidence,
+        tokens=response.tokens,
+    )
+
+
 def _is_uncertain(answer: str) -> bool:
     """Check if a VLM response indicates uncertainty."""
     uncertain_phrases = [
@@ -218,7 +433,6 @@ def _is_uncertain(answer: str) -> bool:
 
 def _display_ask_result(result: AskResult, question: str):
     """Display ask result in rich format."""
-    # Color by confidence
     colors = {"high": "green", "medium": "yellow", "low": "red"}
     color = colors.get(result.confidence, "white")
 

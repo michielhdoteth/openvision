@@ -66,19 +66,54 @@ class WhisperProvider:
     """
 
     def __init__(self, config: Optional[dict] = None):
+        from storage.config import load_config
+        try:
+            app_config = load_config()
+        except Exception:
+            app_config = {}
         self.config = config or {}
-        self.model_size = self.config.get("model_size", "base")
+        app_stt = (app_config.get("models", {}).get("whisper", {}) or {})
+        # Per-call config wins; fall back to config file so the CLI need not
+        # thread extras: models.whisper.model_size / .model_dir.
+        self.model_size = self.config.get("model_size") or app_stt.get("model_size", "base")
         self._requested_device = self.config.get("device", "auto")
         self.device = _resolve_device(self._requested_device)
         self.compute_type = self.config.get(
             "compute_type", "float16" if self.device == "cuda" else "int8"
         )
         self._model = None
+        # Bring-your-own model: config models.whisper.model_dir wins over the
+        # shared resolution chain, so an existing download is never re-fetched.
+        self._app_config = app_config
+
+    def _resolve_whisper_model_ref(self) -> tuple[str, str]:
+        """Return (model_reference_for_faster_whisper, origin).
+
+        Prefers an existing local model: explicit config override -> home cache
+        -> repo checkout. Only downloads when nothing is found locally.
+        """
+        from core.models import adopt_repo_model, download_whisper_model, resolve_model_dir
+        name = f"whisper-{self.model_size}"
+        override = self.config.get("model_dir") or (
+            self._app_config.get("models", {}).get("whisper", {}) or {}
+        ).get("model_dir")
+        if override:
+            return str(override), "override"
+        resolved, origin = resolve_model_dir("whisper", name, self._app_config)
+        if origin in ("home", "override"):
+            return str(resolved), origin
+        if origin == "repo":
+            adopted = adopt_repo_model("whisper", name, self._app_config)
+            return str(adopted or resolved), "repo"
+        path = download_whisper_model(self.model_size)
+        return str(path), "downloaded"
 
     def _ensure_model(self):
-        """Lazy-load the Whisper model.
+        """Lazy-load the Whisper model from a local directory when possible.
 
-        faster-whisper auto-downloads models from Hugging Face Hub on first use.
+        faster-whisper auto-downloads models from Hugging Face Hub only when no
+        local copy resolves; a user-pointed directory (config models.whisper.
+        model_dir) is loaded directly.
         """
         if self._model is None:
             try:
@@ -88,13 +123,26 @@ class WhisperProvider:
                     "faster-whisper is not installed. Run: pip install faster-whisper"
                 )
 
+            try:
+                model_ref, origin = self._resolve_whisper_model_ref()
+            except Exception as exc:
+                from core.errors import OpenVisionError
+                raise OpenVisionError(
+                    code="STT_MODEL_UNAVAILABLE",
+                    message=(
+                        f"Whisper model '{self.model_size}' could not be resolved or "
+                        f"downloaded: {exc}. Point models.whisper.model_dir at an "
+                        "existing model directory to skip downloads."
+                    ),
+                    suggested_retry={"command": f"openvision install get whisper --model {self.model_size}"},
+                )
+
             logger.info(
                 f"Loading Whisper model '{self.model_size}' on {self.device} "
-                f"(compute={self.compute_type})"
+                f"(compute={self.compute_type}, model_dir={model_ref})"
             )
-            # faster-whisper handles model download automatically via HF Hub
             self._model = WhisperModel(
-                self.model_size,
+                model_ref,
                 device=self.device,
                 compute_type=self.compute_type,
             )
@@ -119,7 +167,6 @@ class WhisperProvider:
             logger.warning(f"No audio stream in {video_path}")
             return Transcript(duration_seconds=0.0)
 
-        # Extract audio to temp WAV
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp_path = tmp.name
         tmp.close()
@@ -184,7 +231,6 @@ class WhisperProvider:
         (caller should fall back to transcribe()).
         """
         try:
-            # Probe for subtitle streams
             result = subprocess.run(
                 ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams",
                  "-select_streams", "s", video_path],
@@ -212,7 +258,6 @@ class WhisperProvider:
                 # Try VTT parse first, fall back to SRT-like parsing
                 caps = parse_vtt(content)
                 if not caps:
-                    # Simple SRT-like parsing
                     caps = _parse_srt(content)
 
                 if not caps:

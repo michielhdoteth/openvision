@@ -51,23 +51,19 @@ def ground_cmd(
             console.print("[red]Error:[/red] Query cannot be empty.")
             raise typer.Exit(code=1)
 
-        # Load config
         config = load_config()
         actual_mode, warning = auto_downgrade_mode("fast", config)
         mode_config = get_mode_config(config, actual_mode)
         if warning:
             console.print(f"[yellow]{warning}[/yellow]")
 
-        # Get locate provider config
         locate_config = config.get("models", {}).get("locate", {})
         if provider_name:
             locate_config["provider"] = provider_name
 
-        # Probe video
         video_meta = probe(str(file_path))
         is_image = video_meta.get("is_image", False)
 
-        # Extract frames
         if is_image:
             from core.image import load_image
             image = load_image(str(file_path))
@@ -89,7 +85,6 @@ def ground_cmd(
 
         console.print(f"[dim]Grounding '{query}' across {len(frames)} frames...[/dim]")
 
-        # Set up cache
         from storage.paths import run_cache_dir
         cache_dir = str(run_cache_dir(config))
         cache = RunCache(cache_dir)
@@ -97,7 +92,6 @@ def ground_cmd(
         safe_query = re.sub(r'[^a-zA-Z0-9_]', '_', query)[:20].strip('_')
         run_dir = cache.create_run(f"ground_{safe_query}", video_meta)
 
-        # Run grounding
         provider = LocateAnythingProvider(locate_config)
         try:
             if not provider.check_health():
@@ -116,11 +110,9 @@ def ground_cmd(
             if config.get("gpu_policy", {}).get("unload_after_job", True):
                 provider.unload()
 
-        # Build result model
         grounding_frames = []
         for r in raw_result["results"]:
             boxes = [GroundingBox(**b) for b in r["boxes"]]
-            # Find corresponding frame path
             frame_path = None
             candidate = run_dir / f"ground_{r['timestamp']:.2f}.jpg"
             if candidate.exists():
@@ -143,10 +135,8 @@ def ground_cmd(
             artifacts_dir=str(run_dir),
         )
 
-        # Save artifacts
         cache.save_artifact(run_dir, "grounding.json", result.model_dump())
 
-        # Display
         if json_output:
             typer.echo(json.dumps(result.model_dump(), indent=2))
         else:
@@ -177,7 +167,6 @@ def _display_grounding(result: GroundingResult) -> None:
         console.print("[yellow]No objects found matching the query.[/yellow]")
         return
 
-    # Summary
     total_boxes = sum(len(f.boxes) for f in result.frames)
     unique_labels = set()
     for f in result.frames:
@@ -188,7 +177,6 @@ def _display_grounding(result: GroundingResult) -> None:
     if unique_labels:
         console.print(f"[bold]Unique labels:[/bold] {', '.join(sorted(unique_labels))}")
 
-    # Per-frame details
     table = Table()
     table.add_column("Time", style="cyan")
     table.add_column("Objects", style="green")
