@@ -33,7 +33,7 @@ dependencies = [
     "tqdm>=4.67",
     "click>=8",
     "yt-dlp>=2025",
-    "sherpa-onnx>=1.13",
+    "sherpa-onnx>=1.13.7",
 ]
 
 [project.optional-dependencies]
