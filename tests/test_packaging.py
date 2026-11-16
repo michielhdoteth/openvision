@@ -99,6 +99,8 @@ def test_cli_app_forces_utf8_console_for_the_console_script():
     The test first forces the streams back to cp1252 so it cannot pass just
     because the ambient environment already defaults to UTF-8.
     """
+    if sys.platform != "win32":
+        pytest.skip("the console encoding override is Windows-specific")
     result = _run_outside_project_root("""
         import sys
 
