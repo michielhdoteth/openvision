@@ -27,6 +27,20 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[test]"
 
+      - name: Install FFmpeg on Ubuntu
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y ffmpeg
+
+      - name: Install FFmpeg on Windows
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+
+      - name: Install FFmpeg on macOS
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+
       - name: Verify ffmpeg
         run: ffmpeg -version
 
