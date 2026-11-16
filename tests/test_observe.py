@@ -5,6 +5,7 @@ import json
 import pytest
 import numpy as np
 from pathlib import Path
+from click import unstyle
 from typer.testing import CliRunner
 from openvision.cli.app import app
 from openvision.models import ObserveResult, ImageResult, TimelineEntry
@@ -338,8 +339,9 @@ def test_audio_only_observe_returns_transcript_as_structured_result(tmp_path, mo
 def test_observe_cli_exposes_agent_and_pipeline_controls():
     result = runner.invoke(app, ["observe", "--help"])
     assert result.exit_code == 0
+    output = unstyle(result.output)
     for option in ("--jsonl", "--no-transcribe", "--no-diarize", "--read-text", "--segment", "--ground"):
-        assert option in result.output
+        assert option in output
 
 
 def _stub_video_pipeline(monkeypatch, tmp_path, duration=10.0, has_audio=True, frames=None):
@@ -751,7 +753,7 @@ class TestGridSize:
     def test_flag_exists_and_is_documented(self):
         result = runner.invoke(app, ["observe", "--help"])
         assert result.exit_code == 0
-        assert "--grid-size" in result.output
+        assert "--grid-size" in unstyle(result.output)
 
     @pytest.mark.parametrize("value", ["0", "-1", "13", "1000"])
     def test_rejects_out_of_range_with_a_clear_message(self, value):

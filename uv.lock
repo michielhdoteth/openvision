@@ -2001,7 +2001,7 @@ requires-dist = [
     { name = "torchvision", marker = "(sys_platform == 'linux' and extra == 'diarize') or (sys_platform == 'win32' and extra == 'diarize')", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torchvision", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'diarize'" },
     { name = "tqdm", specifier = ">=4.67" },
-    { name = "typer", specifier = ">=0.23,<0.29" },
+    { name = "typer", specifier = ">=0.23" },
     { name = "ultralytics", marker = "extra == 'segment'", specifier = ">=8" },
     { name = "yt-dlp", specifier = ">=2026.8.19" },
 ]
