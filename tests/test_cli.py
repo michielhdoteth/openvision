@@ -1,7 +1,7 @@
 """Tests for CLI."""
 import pytest
 from typer.testing import CliRunner
-from cli.app import app
+from openvision.cli.app import app
 
 runner = CliRunner()
 
@@ -61,7 +61,7 @@ class TestCliSmoke:
 
     def test_probe_jsonl_is_only_machine_events(self, tmp_path, monkeypatch):
         import json
-        from cli.commands import probe as probe_command
+        from openvision.cli.commands import probe as probe_command
         video = tmp_path / "clip.mp4"
         video.write_bytes(b"stub")
         monkeypatch.setattr(probe_command, "probe", lambda _: {
@@ -81,7 +81,7 @@ class TestCliSmoke:
 
     def test_probe_json_is_machine_readable_for_agent_callers(self, tmp_path, monkeypatch):
         import json
-        from cli.commands import probe as probe_command
+        from openvision.cli.commands import probe as probe_command
 
         video = tmp_path / "clip.mp4"
         video.write_bytes(b"stub")
@@ -134,7 +134,7 @@ class TestCliSmoke:
         assert result.exit_code != 0
 
     def test_observations_reject_traversal(self, tmp_path, monkeypatch):
-        from cli.commands import observations
+        from openvision.cli.commands import observations
         outside = tmp_path / "outside.md"
         outside.write_text("keep", encoding="utf-8")
         monkeypatch.setattr(observations, "_obs_dir", lambda: tmp_path / "notes")
@@ -143,7 +143,7 @@ class TestCliSmoke:
         assert outside.read_text(encoding="utf-8") == "keep"
 
     def test_observations_reject_ambiguous_fuzzy_match(self, tmp_path, monkeypatch):
-        from cli.commands import observations
+        from openvision.cli.commands import observations
         obs = tmp_path / "notes"
         obs.mkdir()
         (obs / "one-report.md").write_text("one", encoding="utf-8")

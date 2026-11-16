@@ -1,6 +1,6 @@
 """Tests for error handling system."""
 import pytest
-from core.errors import (
+from openvision.core.errors import (
     OpenVisionError,
     VideoNotFoundError,
     UnsupportedCodecError,

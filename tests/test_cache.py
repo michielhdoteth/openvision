@@ -2,18 +2,21 @@
 import pytest
 import json
 from pathlib import Path
-from storage.config import (
+from openvision.storage.config import (
     find_config,
     load_config,
     get_mode_config,
     merge_config,
 )
-from storage.cache import RunCache, create_cache_key
+from openvision.storage.cache import RunCache, create_cache_key
 
 
 class TestConfig:
-    def test_find_config(self):
+    def test_find_config(self, monkeypatch, tmp_path):
         """Should find config/default.yaml relative to package."""
+        monkeypatch.delenv("OPENVISION_CONFIG", raising=False)
+        monkeypatch.delenv("OPHANIM_CONFIG", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
         config_path = find_config()
         assert config_path.exists()
         assert config_path.name == "default.yaml"
@@ -179,7 +182,7 @@ class TestRunCache:
     def test_save_transcript_batch(self, cache):
         key = "transcripttest"
         run_dir = cache.create_run(key)
-        from providers.parakeet import TranscriptSegment
+        from openvision.providers.parakeet import TranscriptSegment
         segments = [
             TranscriptSegment(start=0.0, end=3.0, text="Hello", confidence=1.0, speaker="SPEAKER_00"),
             TranscriptSegment(start=3.0, end=6.0, text="World", confidence=1.0, speaker=""),

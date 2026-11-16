@@ -1,8 +1,8 @@
-"""Tests for core.stream - JSONL streaming output."""
+"""Tests for openvision.core.stream - JSONL streaming output."""
 import json
 import io
 import pytest
-from core.stream import JsonlWriter, create_jsonl_writer
+from openvision.core.stream import JsonlWriter, create_jsonl_writer
 
 
 class TestJsonlWriter:

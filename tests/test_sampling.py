@@ -1,7 +1,7 @@
 """Tests for core sampling module."""
 import pytest
 import numpy as np
-from core.sampling import (
+from openvision.core.sampling import (
     detect_scenes,
     deduplicate,
     smart_sample,

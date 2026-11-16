@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from core.video_memory import VideoMemoryStore
+from openvision.core.video_memory import VideoMemoryStore
 
 
 def _store(tmp_path: Path) -> VideoMemoryStore:
@@ -93,14 +93,14 @@ def test_memory_note_cli_writes_json(tmp_path, monkeypatch, capsys):
     """CLI surface: `openvision memory note VIDEO "text" --at 1:23 --json`."""
     from typer.testing import CliRunner
 
-    from cli.commands import memory as memory_cmd
+    from openvision.cli.commands import memory as memory_cmd
 
     video = _write_video(tmp_path / "clip.mp4")
     (tmp_path / "frames").mkdir()
     (tmp_path / "frames" / "f.jpg").write_bytes(b"img")
 
-    import storage.config as storage_config
-    import storage.paths as storage_paths
+    import openvision.storage.config as storage_config
+    import openvision.storage.paths as storage_paths
 
     monkeypatch.setenv("OPENVISION_HOME", str(tmp_path))
     monkeypatch.setattr(storage_config, "load_config", lambda: {})

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from core import models as core_models
+from openvision.core import models as core_models
 
 
 PARAKEET_FILES = ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"]

@@ -1,9 +1,9 @@
-"""Tests for providers.opencv_dnn - OpenCV 5 DNN provider."""
+"""Tests for openvision.providers.opencv_dnn - OpenCV 5 DNN provider."""
 import pytest
 import numpy as np
 from unittest.mock import patch, MagicMock
 from pathlib import Path
-from providers.opencv_dnn import (
+from openvision.providers.opencv_dnn import (
     OpenCVDNNProvider,
     detect_cuda_available,
     get_opencv_version,

@@ -61,12 +61,26 @@ def test_installed_distribution_maps_the_public_openvision_package():
     assert "openvision-ok" in result.stdout
 
 
+def test_installed_distribution_contains_canonical_runtime_packages():
+    """Core, providers, storage, and CLI ship under one public package."""
+    result = _run_outside_project_root("""
+        from openvision.core.stream import JsonlWriter
+        from openvision.providers import get_provider, list_providers
+        from openvision.storage.cache import RunCache
+        from openvision.cli.app import app
+
+        print("runtime-packages-ok")
+    """)
+    assert result.returncode == 0, result.stderr
+    assert "runtime-packages-ok" in result.stdout
+
+
 def test_console_script_entry_point_resolves_outside_the_project_root():
-    """`cli.app:app` is what `openvision` runs, so it must import cleanly."""
+    """`openvision.cli.app:app` is what `openvision` runs, so it must import cleanly."""
     result = _run_outside_project_root("""
         from importlib.metadata import version
 
-        from cli.app import app
+        from openvision.cli.app import app
 
         assert version("openvision")
         print("entry-point-ok")
@@ -79,7 +93,7 @@ def test_cli_app_forces_utf8_console_for_the_console_script():
     """`openvision status` must not render mangled ASCII fallback boxes.
 
     The reconfigure used to live only in the root `__main__.py` shim, which the
-    `[project.scripts] openvision = "cli.app:app"` entry point bypasses, so the
+    `[project.scripts] openvision = "openvision.cli.app:app"` entry point bypasses, so the
     console script rendered while `python __main__.py status` rendered properly.
 
     The test first forces the streams back to cp1252 so it cannot pass just
@@ -91,7 +105,7 @@ def test_cli_app_forces_utf8_console_for_the_console_script():
         sys.stdout.reconfigure(encoding="cp1252", errors="replace")
         sys.stderr.reconfigure(encoding="cp1252", errors="replace")
 
-        import cli.app  # noqa: F401
+        import openvision.cli.app  # noqa: F401
 
         print(sys.stdout.encoding.lower().replace("-", ""))
     """)

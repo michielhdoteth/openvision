@@ -2,7 +2,7 @@
 import pytest
 import numpy as np
 from pathlib import Path
-from core.video import (
+from openvision.core.video import (
     probe,
     _format_timestamp,
     _downscale,
@@ -16,7 +16,7 @@ from core.video import (
 
 def test_ffprobe_detects_audio_and_video_streams(monkeypatch):
     import subprocess
-    from core.video import _probe_ffprobe
+    from openvision.core.video import _probe_ffprobe
 
     class Result:
         returncode = 0
@@ -34,7 +34,7 @@ def test_ffprobe_detects_audio_and_video_streams(monkeypatch):
 
 
 def test_probe_accepts_audio_only_media_when_opencv_cannot_open(monkeypatch):
-    import core.video as video
+    import openvision.core.video as video
 
     class ClosedCapture:
         def isOpened(self):
@@ -52,7 +52,7 @@ def test_probe_accepts_audio_only_media_when_opencv_cannot_open(monkeypatch):
     assert metadata["has_audio"] is True
     assert metadata["has_video"] is False
     assert metadata["frame_count"] == 0
-from core.image import (
+from openvision.core.image import (
     downscale,
     encode_base64,
     make_thumbnail,

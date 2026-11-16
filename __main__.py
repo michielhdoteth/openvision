@@ -3,7 +3,7 @@
 The Windows console is forced to UTF-8 inside cli.app, which both this shim and
 the `openvision` console script import.
 """
-from cli.app import app
+from openvision.cli.app import app
 
 def main():
     app()

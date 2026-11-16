@@ -1,6 +1,6 @@
-"""Tests for core.memory - SQLite cross-video search index."""
+"""Tests for openvision.core.memory - SQLite cross-video search index."""
 import pytest
-from core.memory import VideoMemory, MemoryEntry
+from openvision.core.memory import VideoMemory, MemoryEntry
 
 
 class TestVideoMemory:

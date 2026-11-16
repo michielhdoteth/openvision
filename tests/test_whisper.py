@@ -1,7 +1,7 @@
 """Tests for Parakeet provider."""
 import pytest
 from pathlib import Path
-from providers.parakeet import ParakeetProvider, Transcript, TranscriptSegment
+from openvision.providers.parakeet import ParakeetProvider, Transcript, TranscriptSegment
 
 
 class TestTranscript:

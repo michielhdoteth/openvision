@@ -70,18 +70,18 @@ def process(
     Returns:
         ProcessResult with summary, timeline, entities
     """
-    from core.video import probe, extract_frames, auto_fps, detect_vfr
-    from core.sampling import smart_sample, adaptive_sample
-    from providers.registry import ProviderRegistry
-    from storage.config import load_config, get_mode_config
+    from openvision.core.video import probe, extract_frames, auto_fps, detect_vfr
+    from openvision.core.sampling import smart_sample, adaptive_sample
+    from openvision.providers.registry import ProviderRegistry
+    from openvision.storage.config import load_config, get_mode_config
     from openvision.models import ObserveResult, TimelineEntry
 
     input_path = Path(path)
     if not input_path.exists():
-        from core.download import is_url, download_video
+        from openvision.core.download import is_url, download_video
         if is_url(path):
             config = load_config()
-            from storage.paths import downloads_dir
+            from openvision.storage.paths import downloads_dir
             dl_dir = downloads_dir(config)
             dl_result = download_video(path, output_dir=str(dl_dir))
             input_path = Path(dl_result["path"])
@@ -122,7 +122,7 @@ def process(
 
     transcript = None
     if transcribe_audio:
-        from providers import get_provider
+        from openvision.providers import get_provider
         stt = get_provider(stt_provider, {"device": device})
         transcript = stt.transcribe(str(input_path))
 
@@ -162,15 +162,15 @@ def transcribe(
     Returns:
         Transcript with segments, language, duration
     """
-    from providers import get_provider
-    from core.video import parse_time
+    from openvision.providers import get_provider
+    from openvision.core.video import parse_time
 
     input_path = Path(path)
     if not input_path.exists():
-        from core.download import is_url, download_video
+        from openvision.core.download import is_url, download_video
         if is_url(path):
-            from storage.config import load_config
-            from storage.paths import downloads_dir
+            from openvision.storage.config import load_config
+            from openvision.storage.paths import downloads_dir
             config = load_config()
             dl_dir = downloads_dir(config)
             dl_result = download_video(path, output_dir=str(dl_dir))
@@ -188,7 +188,7 @@ def transcribe(
     window_end = parse_time(to_time) if to_time else None
 
     if window_start is not None or window_end is not None:
-        from core.audio import extract_audio_segment
+        from openvision.core.audio import extract_audio_segment
         import tempfile as _tf
         seg_tmp = _tf.NamedTemporaryFile(suffix=".wav", delete=False)
         seg_path = seg_tmp.name

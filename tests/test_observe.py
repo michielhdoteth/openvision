@@ -6,7 +6,7 @@ import pytest
 import numpy as np
 from pathlib import Path
 from typer.testing import CliRunner
-from cli.app import app
+from openvision.cli.app import app
 from openvision.models import ObserveResult, ImageResult, TimelineEntry
 
 runner = CliRunner()
@@ -149,7 +149,7 @@ class TestBuildSummary:
     """Test the summary builder functions directly via observe module."""
 
     def _import_helpers(self):
-        from cli.commands.observe import (
+        from openvision.cli.commands.observe import (
             _build_timeline_summary_fallback, _build_qa_summary
         )
         return _build_timeline_summary_fallback, _build_qa_summary
@@ -196,7 +196,7 @@ class TestBuildSummary:
 
 
 def test_transcript_from_downloaded_srt_captions(tmp_path):
-    from cli.commands.observe import _transcript_from_captions
+    from openvision.cli.commands.observe import _transcript_from_captions
 
     path = tmp_path / "captions.srt"
     path.write_text("1\n00:00:01,000 --> 00:00:02,500\nA person speaks.\n", encoding="utf-8")
@@ -208,7 +208,7 @@ def test_transcript_from_downloaded_srt_captions(tmp_path):
 
 
 def test_vlm_visible_text_prompt_and_parser():
-    from cli.commands.observe import _visual_prompt, _visible_text_lines
+    from openvision.cli.commands.observe import _visual_prompt, _visible_text_lines
 
     prompt = _visual_prompt(None, True, "Describe the frame.")
     assert "Visible text:" in prompt
@@ -223,10 +223,10 @@ def test_observe_runs_vlm_audio_diarization_segmentation_grounding_and_memory_to
     import json
     from types import SimpleNamespace
     import numpy as np
-    import cli.commands.observe as observe
-    import providers.locate_anything as locate_module
-    from providers.base import TokenUsage, VlmResponse
-    from providers.parakeet import Transcript, TranscriptSegment
+    import openvision.cli.commands.observe as observe
+    import openvision.providers.locate_anything as locate_module
+    from openvision.providers.base import TokenUsage, VlmResponse
+    from openvision.providers.parakeet import Transcript, TranscriptSegment
 
     video = tmp_path / "pipeline.mp4"
     video.write_bytes(b"integration fixture")
@@ -277,7 +277,7 @@ def test_observe_runs_vlm_audio_diarization_segmentation_grounding_and_memory_to
             }]}
         def unload(self):
             pass
-    monkeypatch.setattr("providers.sam.create_segmenter", lambda _cfg: FakeSegmenter())
+    monkeypatch.setattr("openvision.providers.sam.create_segmenter", lambda _cfg: FakeSegmenter())
 
     class FakeLocator:
         def __init__(self, _cfg):
@@ -305,16 +305,16 @@ def test_observe_runs_vlm_audio_diarization_segmentation_grounding_and_memory_to
     assert payload["segmentation"]["status"] == "completed"
     assert payload["stages"]["grounding"]["status"] == "completed"
     assert payload["duration_seconds"] == 10.0
-    from core.video_memory import VideoMemoryStore
+    from openvision.core.video_memory import VideoMemoryStore
     status = VideoMemoryStore(tmp_path / "runs" / "runs.db").status()
     assert status["chunks"] >= 1
 
 
 def test_audio_only_observe_returns_transcript_as_structured_result(tmp_path, monkeypatch, capsys):
     import json
-    import cli.commands.observe as observe
-    from providers.parakeet import Transcript, TranscriptSegment
-    from storage.cache import RunCache
+    import openvision.cli.commands.observe as observe
+    from openvision.providers.parakeet import Transcript, TranscriptSegment
+    from openvision.storage.cache import RunCache
 
     audio = tmp_path / "meeting.wav"
     audio.write_bytes(b"audio fixture")
@@ -344,8 +344,8 @@ def test_observe_cli_exposes_agent_and_pipeline_controls():
 
 def _stub_video_pipeline(monkeypatch, tmp_path, duration=10.0, has_audio=True, frames=None):
     """Point observe at a fake source so no decoder, VLM, or STT model is needed."""
-    import cli.commands.observe as observe
-    import core.sampling
+    import openvision.cli.commands.observe as observe
+    import openvision.core.sampling
 
     video = tmp_path / "clip.mp4"
     video.write_bytes(b"observe fixture")
@@ -370,10 +370,10 @@ def _stub_video_pipeline(monkeypatch, tmp_path, duration=10.0, has_audio=True, f
     })
     monkeypatch.setattr(observe, "detect_vfr", lambda *_: {"mode": "cfr"})
     monkeypatch.setattr(observe, "detect_color_range", lambda *_: {"range_type": "unknown"})
-    # Long sources route through core.sampling.adaptive_sample, short ones through
+    # Long sources route through openvision.core.sampling.adaptive_sample, short ones through
     # the smart_sample imported at module scope. Both must be stubbed.
     monkeypatch.setattr(observe, "smart_sample", lambda *a, **k: list(frames))
-    monkeypatch.setattr(core.sampling, "adaptive_sample", lambda *a, **k: list(frames))
+    monkeypatch.setattr(openvision.core.sampling, "adaptive_sample", lambda *a, **k: list(frames))
     monkeypatch.setattr(observe, "_index_video_memory", lambda *a, **k: None)
     return video
 
@@ -385,7 +385,7 @@ def test_raw_frames_transcription_reaches_the_stt_backend(tmp_path, monkeypatch)
     `--raw-frames --transcribe` run swallowed a NameError into a warning and
     silently returned a frame-only handoff.
     """
-    import cli.commands.observe as observe
+    import openvision.cli.commands.observe as observe
 
     video = _stub_video_pipeline(monkeypatch, tmp_path)
 
@@ -423,8 +423,8 @@ class TestTranscriptionDefaultAndSkippedWarning:
     """
 
     def test_default_transcribes(self, tmp_path, monkeypatch):
-        import cli.commands.observe as observe
-        from providers.parakeet import Transcript, TranscriptSegment
+        import openvision.cli.commands.observe as observe
+        from openvision.providers.parakeet import Transcript, TranscriptSegment
 
         video = _stub_video_pipeline(monkeypatch, tmp_path, has_audio=True)
         monkeypatch.setattr(observe, "_transcribe_or_use_captions", lambda *a, **k: Transcript(
@@ -439,8 +439,8 @@ class TestTranscriptionDefaultAndSkippedWarning:
         assert payload["audio_segments"][0]["text"] == "hello"
 
     def test_explicit_transcribe_flag_still_works(self, tmp_path, monkeypatch):
-        import cli.commands.observe as observe
-        from providers.parakeet import Transcript, TranscriptSegment
+        import openvision.cli.commands.observe as observe
+        from openvision.providers.parakeet import Transcript, TranscriptSegment
 
         video = _stub_video_pipeline(monkeypatch, tmp_path, has_audio=True)
         monkeypatch.setattr(observe, "_transcribe_or_use_captions", lambda *a, **k: Transcript(
@@ -453,8 +453,8 @@ class TestTranscriptionDefaultAndSkippedWarning:
         assert json.loads(result.stdout)["audio_segments"][0]["text"] == "flagged"
 
     def test_no_transcribe_suppresses_transcription(self, tmp_path, monkeypatch):
-        import cli.commands.observe as observe
-        from providers.parakeet import Transcript
+        import openvision.cli.commands.observe as observe
+        from openvision.providers.parakeet import Transcript
 
         video = _stub_video_pipeline(monkeypatch, tmp_path, has_audio=True)
         called = []
@@ -492,8 +492,8 @@ class TestTranscriptionDefaultAndSkippedWarning:
         assert "transcription was skipped" not in result.output
 
     def test_no_warning_when_transcription_runs(self, tmp_path, monkeypatch):
-        import cli.commands.observe as observe
-        from providers.parakeet import Transcript, TranscriptSegment
+        import openvision.cli.commands.observe as observe
+        from openvision.providers.parakeet import Transcript, TranscriptSegment
 
         video = _stub_video_pipeline(monkeypatch, tmp_path, has_audio=True)
         monkeypatch.setattr(observe, "_transcribe_or_use_captions", lambda *a, **k: Transcript(
@@ -507,7 +507,7 @@ class TestTranscriptionDefaultAndSkippedWarning:
         assert json.loads(result.stdout)["audio_segments"][0]["text"] == "hello"
 
     def test_audio_only_source_warns_when_skipped(self, tmp_path, monkeypatch):
-        import cli.commands.observe as observe
+        import openvision.cli.commands.observe as observe
 
         audio = tmp_path / "meeting.wav"
         audio.write_bytes(b"audio fixture")
@@ -525,7 +525,7 @@ class TestSamplingCoverageReporting:
     """Every run must state which part of the source it actually sampled."""
 
     def test_coverage_record_reports_span_and_percentage(self):
-        from cli.commands.observe import _sampling_coverage
+        from openvision.cli.commands.observe import _sampling_coverage
 
         frames = [{"timestamp": t} for t in (0.0, 100.0, 200.0)]
         coverage = _sampling_coverage(frames, 400.0)
@@ -538,7 +538,7 @@ class TestSamplingCoverageReporting:
         assert coverage["duration_seconds"] == 400.0
 
     def test_coverage_record_handles_no_frames(self):
-        from cli.commands.observe import _sampling_coverage
+        from openvision.cli.commands.observe import _sampling_coverage
 
         coverage = _sampling_coverage([], 400.0)
         assert coverage["frames"] == 0
@@ -594,7 +594,7 @@ class TestSamplingCoverageReporting:
         assert json.loads(result.stdout)["sampling"]["duration_seconds"] == 600.0
 
     def test_cached_result_still_reports_coverage(self, tmp_path, monkeypatch):
-        from cli.commands.observe import _display_observation
+        from openvision.cli.commands.observe import _display_observation
 
         video = _stub_video_pipeline(monkeypatch, tmp_path, duration=600.0)
         first = runner.invoke(app, ["observe", "--no-diarize", "--json", str(video)])
@@ -611,7 +611,7 @@ class TestSamplingCoverageReporting:
 
         from rich.console import Console
 
-        import cli.commands.observe as observe
+        import openvision.cli.commands.observe as observe
 
         buffer = io.StringIO()
         monkeypatch.setattr(observe, "console", Console(file=buffer, width=200, no_color=True))
@@ -643,7 +643,7 @@ class TestSubtitleResolution:
     SRT = "1\n00:00:09,000 --> 00:00:10,500\nSrt cue.\n"
 
     def test_finds_yt_dlp_language_and_mark_suffix(self, tmp_path):
-        from cli.commands.observe import _subtitle_anchor_times
+        from openvision.cli.commands.observe import _subtitle_anchor_times
 
         video = tmp_path / "workaholic.mp4"
         video.write_bytes(b"stub")
@@ -656,7 +656,7 @@ class TestSubtitleResolution:
         "clip.pt-BR.vtt", "clip.en.srt",
     ])
     def test_finds_suffixed_variants(self, tmp_path, name):
-        from cli.commands.observe import _subtitle_anchor_times
+        from openvision.cli.commands.observe import _subtitle_anchor_times
 
         video = tmp_path / "clip.mp4"
         video.write_bytes(b"stub")
@@ -666,7 +666,7 @@ class TestSubtitleResolution:
         assert _subtitle_anchor_times(video), name
 
     def test_bare_name_still_wins_over_suffixed(self, tmp_path):
-        from cli.commands.observe import _subtitle_anchor_times
+        from openvision.cli.commands.observe import _subtitle_anchor_times
 
         video = tmp_path / "clip.mp4"
         video.write_bytes(b"stub")
@@ -677,7 +677,7 @@ class TestSubtitleResolution:
         assert _subtitle_anchor_times(video) == [1.0, 4.0]
 
     def test_srt_beats_vtt(self, tmp_path):
-        from cli.commands.observe import _subtitle_anchor_times
+        from openvision.cli.commands.observe import _subtitle_anchor_times
 
         video = tmp_path / "clip.mp4"
         video.write_bytes(b"stub")
@@ -687,7 +687,7 @@ class TestSubtitleResolution:
         assert _subtitle_anchor_times(video) == [9.0]
 
     def test_candidate_order_is_deterministic(self, tmp_path):
-        from cli.commands.observe import _subtitle_candidates
+        from openvision.cli.commands.observe import _subtitle_candidates
 
         video = tmp_path / "clip.mp4"
         video.write_bytes(b"stub")
@@ -704,7 +704,7 @@ class TestSubtitleResolution:
         assert names == [c.name for c in _subtitle_candidates(video)]
 
     def test_ignores_lookalike_stems(self, tmp_path):
-        from cli.commands.observe import _subtitle_anchor_times
+        from openvision.cli.commands.observe import _subtitle_anchor_times
 
         video = tmp_path / "clip.mp4"
         video.write_bytes(b"stub")
@@ -714,7 +714,7 @@ class TestSubtitleResolution:
         assert _subtitle_anchor_times(video) == []
 
     def test_missing_subtitles_returns_empty(self, tmp_path):
-        from cli.commands.observe import _subtitle_anchor_times
+        from openvision.cli.commands.observe import _subtitle_anchor_times
 
         video = tmp_path / "clip.mp4"
         video.write_bytes(b"stub")
@@ -723,8 +723,8 @@ class TestSubtitleResolution:
 
     def test_text_anchors_run_reports_the_suffixed_file(self, tmp_path, monkeypatch):
         """End-to-end: --text-anchors consumes the suffixed subtitle file."""
-        import cli.commands.observe as observe
-        import core.video
+        import openvision.cli.commands.observe as observe
+        import openvision.core.video
 
         video = _stub_video_pipeline(monkeypatch, tmp_path)
         (tmp_path / "clip.en-orig.vtt").write_text(self.VTT, encoding="utf-8")
@@ -736,7 +736,7 @@ class TestSubtitleResolution:
                      "image": np.zeros((4, 4, 3), np.uint8), "reason": "timestamp-cue"}
                     for i, t in enumerate(timestamps)]
 
-        monkeypatch.setattr(core.video, "extract_at_timestamps", fake_extract_at_timestamps)
+        monkeypatch.setattr(openvision.core.video, "extract_at_timestamps", fake_extract_at_timestamps)
 
         result = runner.invoke(app, ["observe", "--text-anchors", "--no-diarize", str(video)])
 
@@ -769,8 +769,8 @@ class TestGridSize:
 
     @pytest.mark.parametrize("size", [1, 2, 3, 4, 12])
     def test_accepted_sizes_reach_the_contact_sheet(self, tmp_path, monkeypatch, size):
-        import cli.commands.observe as observe
-        import core.contact_sheet as contact_sheet
+        import openvision.cli.commands.observe as observe
+        import openvision.core.contact_sheet as contact_sheet
 
         video = _stub_video_pipeline(monkeypatch, tmp_path)
         seen = {}
@@ -791,7 +791,7 @@ class TestGridSize:
         assert f"Contact sheet ({size}x{size})" in result.output
 
     def test_default_stays_three_by_three(self, tmp_path, monkeypatch):
-        import core.contact_sheet as contact_sheet
+        import openvision.core.contact_sheet as contact_sheet
 
         video = _stub_video_pipeline(monkeypatch, tmp_path)
         seen = {}

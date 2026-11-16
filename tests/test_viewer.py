@@ -1,9 +1,9 @@
-"""Tests for core.viewer - self-contained HTML viewer."""
+"""Tests for openvision.core.viewer - self-contained HTML viewer."""
 import pytest
 import numpy as np
 from pathlib import Path
 from unittest.mock import MagicMock
-from core.viewer import generate_viewer
+from openvision.core.viewer import generate_viewer
 
 
 class TestGenerateViewer:

@@ -2,10 +2,10 @@
 import json
 from typer.testing import CliRunner
 
-from cli.app import app
-from storage.cache import RunCache
+from openvision.cli.app import app
+from openvision.storage.cache import RunCache
 
-from core.video_memory import VideoMemoryStore
+from openvision.core.video_memory import VideoMemoryStore
 
 
 def test_build_and_search_keeps_modalities_and_identity_unresolved(tmp_path):
@@ -85,7 +85,7 @@ def test_sources_command_lists_indexed_video_hierarchy(tmp_path, monkeypatch):
 
 
 def test_memory_terminal_text_escapes_unrepresentable_characters():
-    from cli.commands.memory import _console_safe
+    from openvision.cli.commands.memory import _console_safe
 
     assert _console_safe("ma\u0301quina", "cp1252") == r"ma\u0301quina"
 
@@ -119,7 +119,7 @@ def test_memory_uses_the_same_absolute_cache_directory_as_observe(tmp_path, monk
 
 
 def test_observe_indexing_persists_searchable_transcript_and_visual(tmp_path):
-    from cli.commands.observe import _index_video_memory
+    from openvision.cli.commands.observe import _index_video_memory
     from openvision.models import ObserveResult, TimelineEntry
     video = tmp_path / "source.mp4"
     video.write_bytes(b"media")
@@ -145,7 +145,7 @@ def test_observe_indexing_persists_searchable_transcript_and_visual(tmp_path):
 
 def test_add_transcript_merges_without_dropping_visual_evidence(tmp_path, sample_transcript_segments):
     """A transcribe run must add speech to a video that was already observed."""
-    from cli.commands.observe import _index_video_memory
+    from openvision.cli.commands.observe import _index_video_memory
     from openvision.models import ObserveResult, TimelineEntry
 
     video = tmp_path / "source.mp4"
@@ -202,7 +202,7 @@ def test_add_transcript_is_idempotent_and_creates_speech_only_nodes(tmp_path, sa
 
 def test_add_transcript_replaces_previous_speech(tmp_path):
     """A shorter re-run must not leave stale audio evidence behind."""
-    from providers.parakeet import TranscriptSegment
+    from openvision.providers.parakeet import TranscriptSegment
 
     video = tmp_path / "source.mp4"
     video.write_bytes(b"media")

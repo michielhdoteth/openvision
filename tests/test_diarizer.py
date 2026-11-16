@@ -1,5 +1,5 @@
-from providers.diarizer import SpeakerSegment, merge_transcript_with_diarization
-from providers.parakeet import TranscriptSegment
+from openvision.providers.diarizer import SpeakerSegment, merge_transcript_with_diarization
+from openvision.providers.parakeet import TranscriptSegment
 
 
 def test_transcript_segment_uses_speaker_with_greatest_time_overlap():

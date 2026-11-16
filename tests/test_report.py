@@ -1,8 +1,8 @@
-"""Tests for core.report - keep/drop visualization HTML report."""
+"""Tests for openvision.core.report - keep/drop visualization HTML report."""
 import pytest
 import numpy as np
 from pathlib import Path
-from core.report import generate_keep_drop_report
+from openvision.core.report import generate_keep_drop_report
 
 
 class TestGenerateKeepDropReport:

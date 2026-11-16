@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from cli.commands.status import _check_parakeet_model
-from core import models as core_models
+from openvision.cli.commands.status import _check_parakeet_model
+from openvision.core import models as core_models
 
 
 PARAKEET_FILES = ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"]

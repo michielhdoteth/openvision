@@ -3,8 +3,8 @@ from pydantic import BaseModel, Field
 from typing import Optional, Literal
 from datetime import datetime
 
-# Re-export canonical TokenUsage from providers.base (Pydantic-compatible)
-from providers.base import TokenUsage
+# Re-export canonical TokenUsage from openvision.providers.base (Pydantic-compatible)
+from openvision.providers.base import TokenUsage
 
 
 class Frame(BaseModel):

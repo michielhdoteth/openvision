@@ -32,14 +32,14 @@ def sample_frames(sample_image):
 @pytest.fixture
 def tmp_run_cache(tmp_path):
     """Create a fresh RunCache in a temp directory."""
-    from storage.cache import RunCache
+    from openvision.storage.cache import RunCache
     return RunCache(str(tmp_path / "runs"))
 
 
 @pytest.fixture
 def sample_transcript_segments():
     """Create sample transcript segments (dataclass-like objects)."""
-    from providers.parakeet import TranscriptSegment
+    from openvision.providers.parakeet import TranscriptSegment
     return [
         TranscriptSegment(start=0.0, end=3.0, text="Hello world.", confidence=1.0),
         TranscriptSegment(start=3.0, end=6.0, text="This is a test.", confidence=1.0),

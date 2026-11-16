@@ -1,6 +1,6 @@
 """Tests for adaptive frame sampling."""
 import pytest
-from core.sampling import adaptive_sample
+from openvision.core.sampling import adaptive_sample
 
 
 def _coarse_pass(duration: float, count: int = 300):
@@ -15,17 +15,17 @@ def test_adaptive_sample_spans_the_full_duration_when_scenes_cluster_at_the_head
     with a busy opening that produced 12 frames all inside the first 162s -- 89%
     of the video unsampled, reported as a success.
     """
-    import core.video
+    import openvision.core.video
 
     duration, coarse_count = 1432.0, 300
     frames = _coarse_pass(duration, coarse_count)
-    monkeypatch.setattr(core.video, "probe",
+    monkeypatch.setattr(openvision.core.video, "probe",
                         lambda path: {"duration_seconds": duration, "fps": 30.0})
-    monkeypatch.setattr(core.video, "extract_frames", lambda *a, **k: frames)
+    monkeypatch.setattr(openvision.core.video, "extract_frames", lambda *a, **k: frames)
     # Scene changes only in the first 5% of the video.
     head = [i for i, f in enumerate(frames) if f["timestamp"] <= duration * 0.05]
     assert head
-    monkeypatch.setattr("core.sampling.detect_scenes", lambda *a, **k: head)
+    monkeypatch.setattr("openvision.core.sampling.detect_scenes", lambda *a, **k: head)
 
     result = adaptive_sample("fake.mp4", max_frames=12)
 
@@ -37,14 +37,14 @@ def test_adaptive_sample_spans_the_full_duration_when_scenes_cluster_at_the_head
 
 
 def test_adaptive_sample_spans_the_full_duration_without_any_scene_changes(monkeypatch):
-    import core.video
+    import openvision.core.video
 
     duration, coarse_count = 1432.0, 300
     frames = _coarse_pass(duration, coarse_count)
-    monkeypatch.setattr(core.video, "probe",
+    monkeypatch.setattr(openvision.core.video, "probe",
                         lambda path: {"duration_seconds": duration, "fps": 30.0})
-    monkeypatch.setattr(core.video, "extract_frames", lambda *a, **k: frames)
-    monkeypatch.setattr("core.sampling.detect_scenes", lambda *a, **k: [])
+    monkeypatch.setattr(openvision.core.video, "extract_frames", lambda *a, **k: frames)
+    monkeypatch.setattr("openvision.core.sampling.detect_scenes", lambda *a, **k: [])
 
     result = adaptive_sample("fake.mp4", max_frames=12)
 
@@ -53,14 +53,14 @@ def test_adaptive_sample_spans_the_full_duration_without_any_scene_changes(monke
 
 
 def test_adaptive_sample_never_exceeds_the_frame_budget(monkeypatch):
-    import core.video
+    import openvision.core.video
 
     duration, coarse_count = 600.0, 300
     frames = _coarse_pass(duration, coarse_count)
-    monkeypatch.setattr(core.video, "probe",
+    monkeypatch.setattr(openvision.core.video, "probe",
                         lambda path: {"duration_seconds": duration, "fps": 30.0})
-    monkeypatch.setattr(core.video, "extract_frames", lambda *a, **k: frames)
-    monkeypatch.setattr("core.sampling.detect_scenes",
+    monkeypatch.setattr(openvision.core.video, "extract_frames", lambda *a, **k: frames)
+    monkeypatch.setattr("openvision.core.sampling.detect_scenes",
                         lambda *a, **k: list(range(0, coarse_count, 3)))
 
     for budget in (1, 2, 5, 12, 40, 60, 300, 500):
@@ -72,15 +72,15 @@ def test_adaptive_sample_never_exceeds_the_frame_budget(monkeypatch):
 class TestAdaptiveSample:
 
     def test_decodes_video_only_once(self, monkeypatch):
-        import core.video
+        import openvision.core.video
         calls = []
         frames = [{"timestamp": float(i), "image": None} for i in range(10)]
-        monkeypatch.setattr(core.video, "probe", lambda path: {"duration_seconds": 10, "fps": 1})
+        monkeypatch.setattr(openvision.core.video, "probe", lambda path: {"duration_seconds": 10, "fps": 1})
         def extract(*args, **kwargs):
             calls.append(1)
             return frames
-        monkeypatch.setattr(core.video, "extract_frames", extract)
-        monkeypatch.setattr("core.sampling.detect_scenes", lambda *a, **k: [3, 6])
+        monkeypatch.setattr(openvision.core.video, "extract_frames", extract)
+        monkeypatch.setattr("openvision.core.sampling.detect_scenes", lambda *a, **k: [3, 6])
         result = adaptive_sample("fake.mp4", max_frames=10)
         assert len(calls) == 1
         assert len(result) == 10

@@ -1,8 +1,8 @@
-"""Tests for providers.parakeet - Parakeet STT provider."""
+"""Tests for openvision.providers.parakeet - Parakeet STT provider."""
 import pytest
 from unittest.mock import patch, MagicMock
 from pathlib import Path
-from providers.parakeet import (
+from openvision.providers.parakeet import (
     ParakeetProvider,
     Transcript,
     TranscriptSegment,
@@ -19,15 +19,15 @@ class TestResolveDevice:
     def test_explicit_cuda(self):
         assert _resolve_device("cuda") == "cuda"
 
-    @patch("core.gpu.get_vram_info", return_value={"free_gb": 2.0})
+    @patch("openvision.core.gpu.get_vram_info", return_value={"free_gb": 2.0})
     def test_auto_with_gpu(self, mock_vram):
         assert _resolve_device("auto") == "cuda"
 
-    @patch("core.gpu.get_vram_info", return_value={"free_gb": 0.5})
+    @patch("openvision.core.gpu.get_vram_info", return_value={"free_gb": 0.5})
     def test_auto_without_gpu(self, mock_vram):
         assert _resolve_device("auto") == "cpu"
 
-    @patch("core.gpu.get_vram_info", side_effect=Exception("no gpu"))
+    @patch("openvision.core.gpu.get_vram_info", side_effect=Exception("no gpu"))
     def test_auto_vram_query_fails(self, mock_vram):
         assert _resolve_device("auto") == "cpu"
 

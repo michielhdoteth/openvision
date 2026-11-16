@@ -1,17 +1,17 @@
-"""Tests for VLM providers."""
+"""Tests for VLM openvision.providers."""
 import pytest
 import numpy as np
 import httpx
 import socket
 from unittest.mock import patch
 
-from providers.base import VlmProvider, VlmResponse, TokenUsage
-from providers.lmstudio import LmStudioProvider
-from providers.openai_compat import OpenAICompatProvider
-from providers.llamacpp import LlamaCppProvider
-from providers.cloud import CloudProvider
-from providers.gemini import GeminiProvider
-from providers.registry import ProviderRegistry, _extract_models
+from openvision.providers.base import VlmProvider, VlmResponse, TokenUsage
+from openvision.providers.lmstudio import LmStudioProvider
+from openvision.providers.openai_compat import OpenAICompatProvider
+from openvision.providers.llamacpp import LlamaCppProvider
+from openvision.providers.cloud import CloudProvider
+from openvision.providers.gemini import GeminiProvider
+from openvision.providers.registry import ProviderRegistry, _extract_models
 
 
 # ------------------------------------------------------------------

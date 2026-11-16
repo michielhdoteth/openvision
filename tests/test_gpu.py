@@ -1,6 +1,6 @@
 """Tests for GPU memory manager."""
 import pytest
-from core.gpu import (
+from openvision.core.gpu import (
     get_vram_info,
     check_safe_mode,
     auto_downgrade_mode,
@@ -69,7 +69,7 @@ class TestGetGpuName:
         assert len(name) > 0
 
     def test_nvml_name_supports_string_return(self, monkeypatch):
-        import core.gpu as gpu
+        import openvision.core.gpu as gpu
 
         monkeypatch.setattr(gpu, "_init_pynvml", lambda: True)
         monkeypatch.setattr(gpu.pynvml, "nvmlDeviceGetHandleByIndex", lambda _: object())

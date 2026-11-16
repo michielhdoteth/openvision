@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -18,28 +18,28 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "opencv-python>=5.0",
+    "opencv-python>=5.0.0.93",
     "pillow>=11",
-    "numpy>=2",
+    "numpy>=2.5.2",
     "typer>=0.23",
     "rich>=13",
     "pydantic>=2",
     "httpx>=0.28",
-    "pyyaml>=6",
-    "nvidia-ml-py>=12",
-    "imageio>=2.36",
-    "scikit-learn>=1.6",
+    "pyyaml>=6.0.3",
+    "nvidia-ml-py>=13.610.43",
+    "imageio>=2.37.4",
+    "scikit-learn>=1.9.0",
     "scipy>=1.13",
     "tqdm>=4.67",
     "click>=8",
-    "yt-dlp>=2025",
-    "sherpa-onnx>=1.13",
+    "yt-dlp>=2026.8.19",
+    "sherpa-onnx>=1.13.7",
 ]
 
 [project.optional-dependencies]
 test = [
-    "pytest>=8",
-    "pytest-mock>=3",
+    "pytest>=9.1.1",
+    "pytest-mock>=3.15.1",
     "pytest-cov>=6",
 ]
 diarize = [
@@ -58,8 +58,8 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [project.scripts]
-openvision = "cli.app:app"
-ov = "cli.app:app"
+openvision = "openvision.cli.app:app"
+ov = "openvision.cli.app:app"
 
 [tool.setuptools.packages.find]
 # "openvision*" is the public API package and MUST stay in this list. It was
@@ -69,7 +69,13 @@ ov = "cli.app:app"
 # project root on sys.path and masks the broken editable finder. Changing this
 # list requires a reinstall (`pip install -e . --no-deps`).
 # tests/test_packaging.py fails if this entry is dropped without a reinstall.
-include = ["openvision*", "cli*", "core*", "providers*", "storage*"]
+include = ["openvision*"]
+
+[tool.setuptools.package-data]
+openvision = ["config/*.yaml"]
+
+[tool.setuptools.data-files]
+"share/openvision" = ["SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

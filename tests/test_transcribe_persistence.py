@@ -2,16 +2,16 @@
 import pytest
 from typer.testing import CliRunner
 
-from cli.app import app
-from core.video_memory import VideoMemoryStore
-from storage.cache import RunCache
-from storage.paths import run_cache_dir
+from openvision.cli.app import app
+from openvision.core.video_memory import VideoMemoryStore
+from openvision.storage.cache import RunCache
+from openvision.storage.paths import run_cache_dir
 
 
 @pytest.fixture
 def fake_provider(tmp_path, monkeypatch):
     """Patch the STT provider so no GPU/model is needed."""
-    from providers.parakeet import Transcript, TranscriptSegment
+    from openvision.providers.parakeet import Transcript, TranscriptSegment
 
     class FakeTranscript(Transcript):
         def __init__(self):
@@ -26,7 +26,7 @@ def fake_provider(tmp_path, monkeypatch):
         def transcribe(self, path):
             return FakeTranscript()
 
-    import cli.commands.transcribe as mod
+    import openvision.cli.commands.transcribe as mod
     monkeypatch.setattr(mod, "get_provider", lambda name, config: FakeProvider())
     return mod
 
@@ -77,7 +77,7 @@ def test_transcribe_save_to_writes_exact_path(tmp_path, monkeypatch, fake_provid
 
 
 def _config():
-    from storage.config import load_config
+    from openvision.storage.config import load_config
     try:
         return load_config()
     except FileNotFoundError:

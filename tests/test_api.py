@@ -39,11 +39,11 @@ class TestProcessResult:
 
 
 class TestProcess:
-    @patch("providers.registry.ProviderRegistry.create")
-    @patch("core.sampling.smart_sample")
-    @patch("core.video.detect_vfr", return_value={"mode": "cfr"})
-    @patch("core.video.auto_fps", return_value=60)
-    @patch("core.video.probe")
+    @patch("openvision.providers.registry.ProviderRegistry.create")
+    @patch("openvision.core.sampling.smart_sample")
+    @patch("openvision.core.video.detect_vfr", return_value={"mode": "cfr"})
+    @patch("openvision.core.video.auto_fps", return_value=60)
+    @patch("openvision.core.video.probe")
     def test_process_returns_result(self, mock_probe, mock_auto_fps, mock_vfr,
                                      mock_sample, mock_registry, tmp_path):
         from openvision import process, ProcessResult
@@ -67,10 +67,10 @@ class TestProcess:
 
 
 class TestTranscribe:
-    @patch("providers.get_provider")
+    @patch("openvision.providers.get_provider")
     def test_transcribe_returns_result(self, mock_get_provider):
         from openvision import transcribe
-        from providers.parakeet import Transcript, TranscriptSegment
+        from openvision.providers.parakeet import Transcript, TranscriptSegment
 
         mock_provider = MagicMock()
         mock_provider.transcribe.return_value = Transcript(

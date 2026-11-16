@@ -5,10 +5,10 @@ import httpx
 import numpy as np
 import pytest
 
-from core.errors import OpenVisionError
-from providers.base import VlmProvider
-from providers.decisions import DecisionAnswer, DecisionProvider
-from providers.registry import ProviderRegistry
+from openvision.core.errors import OpenVisionError
+from openvision.providers.base import VlmProvider
+from openvision.providers.decisions import DecisionAnswer, DecisionProvider
+from openvision.providers.registry import ProviderRegistry
 from typing import cast
 
 
@@ -252,7 +252,7 @@ def test_chat_providers_advertise_chat_kind():
 
 
 def test_ask_helpers_route_and_subsample():
-    from cli.commands.ask import _evenly, _normalize_decision_kind
+    from openvision.cli.commands.ask import _evenly, _normalize_decision_kind
 
     assert _normalize_decision_kind(None, None, None) is None
     assert _normalize_decision_kind(None, "a,b", None) == "choice"
@@ -268,7 +268,7 @@ def test_ask_helpers_route_and_subsample():
     assert _evenly(frames, 20) == frames
 
 def test_run_decision_returns_ask_result(monkeypatch):
-    from cli.commands import ask as ask_module
+    from openvision.cli.commands import ask as ask_module
 
     captured: dict = {}
     payload = {
@@ -310,7 +310,7 @@ def test_run_decision_returns_ask_result(monkeypatch):
 
 
 def test_run_decision_respects_model_frame_cap(monkeypatch):
-    from cli.commands import ask as ask_module
+    from openvision.cli.commands import ask as ask_module
 
     captured: dict = {}
     payload = {"answers": {"answer": {"type": "noul", "noul": 0.7}}}
@@ -333,7 +333,7 @@ def test_run_decision_respects_model_frame_cap(monkeypatch):
 
 
 def test_run_decision_rejects_chat_provider(monkeypatch):
-    from cli.commands import ask as ask_module
+    from openvision.cli.commands import ask as ask_module
 
     class ChatStub:
         kind = "chat"

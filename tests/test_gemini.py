@@ -3,7 +3,7 @@ import httpx
 import numpy as np
 import pytest
 
-from providers.gemini import GeminiProvider, DEFAULT_BASE_URL, DEFAULT_MODEL
+from openvision.providers.gemini import GeminiProvider, DEFAULT_BASE_URL, DEFAULT_MODEL
 
 
 def _provider(monkeypatch, **config):

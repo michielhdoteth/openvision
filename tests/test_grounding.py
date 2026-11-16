@@ -4,7 +4,7 @@ import numpy as np
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 
-from providers.locate_anything import LocateAnythingProvider
+from openvision.providers.locate_anything import LocateAnythingProvider
 from openvision.models import GroundingBox, GroundingFrame, GroundingResult, TokenUsage
 
 
@@ -41,7 +41,7 @@ class TestLocateAnythingProvider:
         assert result["results"] == []
         assert result["frames_processed"] == 0
 
-    @patch("providers.locate_anything.LocateAnythingProvider.client", new_callable=lambda: property(lambda self: self))
+    @patch("openvision.providers.locate_anything.LocateAnythingProvider.client", new_callable=lambda: property(lambda self: self))
     def test_locate_single_frame(self, mock_client_prop):
         """Test locating objects in a single frame."""
         provider = LocateAnythingProvider({})
@@ -203,7 +203,7 @@ class TestGroundingModels:
 class TestGroundCommandCLI:
     def test_ground_help(self):
         from typer.testing import CliRunner
-        from cli.app import app
+        from openvision.cli.app import app
         runner = CliRunner()
         result = runner.invoke(app, ["ground", "--help"])
         assert result.exit_code == 0
@@ -211,14 +211,14 @@ class TestGroundCommandCLI:
 
     def test_ground_nonexistent_file(self):
         from typer.testing import CliRunner
-        from cli.app import app
+        from openvision.cli.app import app
         runner = CliRunner()
         result = runner.invoke(app, ["ground", "nonexistent.mp4", "--query", "person"])
         assert result.exit_code != 0
 
     def test_ground_no_query(self):
         from typer.testing import CliRunner
-        from cli.app import app
+        from openvision.cli.app import app
         runner = CliRunner()
         result = runner.invoke(app, ["ground", "nonexistent.mp4"])
         assert result.exit_code != 0
@@ -227,7 +227,7 @@ class TestGroundCommandCLI:
 class TestObserveGroundFlag:
     def test_observe_ground_help(self):
         from typer.testing import CliRunner
-        from cli.app import app
+        from openvision.cli.app import app
         runner = CliRunner()
         result = runner.invoke(app, ["observe", "--help"])
         assert result.exit_code == 0

@@ -1,8 +1,8 @@
-"""Tests for core.contact_sheet - grid contact sheet generation."""
+"""Tests for openvision.core.contact_sheet - grid contact sheet generation."""
 import pytest
 import numpy as np
 from pathlib import Path
-from core.contact_sheet import create_contact_sheet
+from openvision.core.contact_sheet import create_contact_sheet
 
 
 class TestCreateContactSheet:

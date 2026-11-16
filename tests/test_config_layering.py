@@ -1,7 +1,7 @@
 """Configuration discovery and user override behavior."""
 import pytest
 
-from storage.config import find_config, load_config
+from openvision.storage.config import find_config, load_config
 
 
 def test_user_config_layers_over_packaged_defaults(tmp_path, monkeypatch):
