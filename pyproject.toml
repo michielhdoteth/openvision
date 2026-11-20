@@ -50,7 +50,7 @@ diarize = [
     "torchvision",
 ]
 segment = [
-    "ultralytics>=8",
+    "ultralytics>=8.4.215",
 ]
 
 [[tool.uv.index]]
