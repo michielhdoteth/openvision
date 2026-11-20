@@ -32,7 +32,7 @@ dependencies = [
     "scipy>=1.13",
     "tqdm>=4.67",
     "click>=8",
-    "yt-dlp>=2026.8.19",
+    "yt-dlp>=2026.10.26",
     "sherpa-onnx>=1.13.7",
 ]
 
